@@ -6,6 +6,7 @@ pause/resume/run/remove, status, and tick.
 """
 
 import json
+import time
 import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -122,6 +123,24 @@ def cron_tick():
     """Run due jobs once and exit."""
     from cron.scheduler import tick
     tick(verbose=True)
+
+
+def cron_daemon(interval: int = 60):
+    """Run the cron scheduler loop in the foreground."""
+    from cron.scheduler import tick
+
+    interval = max(1, int(interval))
+    print(color(f"Starting Hermes cron daemon (interval={interval}s)", Colors.CYAN))
+    print(color("Press Ctrl+C to stop.", Colors.DIM))
+    print()
+
+    try:
+        while True:
+            tick(verbose=True)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print()
+        print(color("Cron daemon stopped.", Colors.YELLOW))
 
 
 def cron_status():
@@ -267,6 +286,11 @@ def cron_command(args):
         cron_tick()
         return 0
 
+    if subcmd == "daemon":
+        interval = getattr(args, "interval", 60)
+        cron_daemon(interval)
+        return 0
+
     if subcmd in {"create", "add"}:
         return cron_create(args)
 
@@ -286,5 +310,5 @@ def cron_command(args):
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick|daemon]")
     sys.exit(1)

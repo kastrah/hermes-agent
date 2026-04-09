@@ -57,6 +57,56 @@ except (ImportError, AttributeError):
 import threading
 import queue
 
+# Steer phrases for course correction detection (same as gateway/platforms/base.py)
+_BUSY_STEER_PHRASES = (
+    "actually",
+    "adjust",
+    "change",
+    "correction",
+    "fix",
+    "forget that",
+    "hold on",
+    "i mean",
+    "instead",
+    "make it",
+    "modify",
+    "never mind",
+    "nevermind",
+    "no,",
+    "not that",
+    "redo",
+    "revise",
+    "scratch that",
+    "switch",
+    "try again",
+    "update",
+    "use the",
+    "wait",
+)
+
+# Queue phrases for "do this after current task" detection (same as gateway/platforms/base.py)
+_BUSY_QUEUE_PHRASES = (
+    "after this",
+    "after you're done",
+    "also later",
+    "another thing",
+    "do this after",
+    "for later",
+    "follow up",
+    "later",
+    "next task",
+    "not now",
+    "put this aside",
+    "queue this",
+    "remind me later",
+    "separately",
+    "set aside",
+    "skip for now",
+    "todo",
+    "when you're done",
+    "while you're at it",
+)
+
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
@@ -1514,7 +1564,11 @@ class HermesCLI:
             from hermes_state import SessionDB
             self._session_db = SessionDB()
         except Exception as e:
-            logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
+            logger.warning(
+                "Failed to initialize SessionDB — session will NOT be indexed for search: %s",
+                e,
+                exc_info=True,
+            )
         
         # Deferred title: stored in memory until the session is created in the DB
         self._pending_title: Optional[str] = None
@@ -6623,11 +6677,30 @@ class HermesCLI:
                             # But if it does (race condition), don't interrupt.
                             if self._clarify_state or self._clarify_freetext:
                                 continue
-                            print("\n⚡ New message detected, interrupting...")
-                            # Signal TTS to stop on interrupt
-                            if stop_event is not None:
-                                stop_event.set()
-                            self.agent.interrupt(interrupt_msg)
+                            # Check if this is a steer (course correction), queue (do later), or regular interrupt
+                            interrupt_msg_lower = interrupt_msg.lower()
+                            is_steer = any(phrase in interrupt_msg_lower for phrase in _BUSY_STEER_PHRASES)
+                            is_queue = any(phrase in interrupt_msg_lower for phrase in _BUSY_QUEUE_PHRASES)
+                            
+                            if is_steer:
+                                print("\n🎯 Steering agent with course correction...")
+                                # Signal TTS to stop on interrupt
+                                if stop_event is not None:
+                                    stop_event.set()
+                                self.agent.steer(interrupt_msg)
+                            elif is_queue:
+                                print(f"\n📥 Queued for later: '{interrupt_msg[:50]}{'...' if len(interrupt_msg) > 50 else ''}'")
+                                # Store in pending input WITHOUT interrupting - current task continues
+                                if hasattr(self, '_pending_input'):
+                                    self._pending_input.put(interrupt_msg)
+                                # Skip the break - don't interrupt, just continue monitoring
+                                continue
+                            else:
+                                print("\n⚡ New message detected, interrupting...")
+                                # Signal TTS to stop on interrupt
+                                if stop_event is not None:
+                                    stop_event.set()
+                                self.agent.interrupt(interrupt_msg)
                             # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:
                                 _dbg = _hermes_home / "interrupt_debug.log"

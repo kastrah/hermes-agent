@@ -4437,6 +4437,21 @@ For more help on a command:
                              help="Suppress all stderr log output")
     gateway_run.add_argument("--replace", action="store_true",
                              help="Replace any existing gateway instance (useful for systemd)")
+    gateway_run.add_argument(
+        "--platform",
+        dest="platforms",
+        action="append",
+        help="Only connect specific platform(s). Repeatable, e.g. --platform telegram --platform discord",
+    )
+    gateway_run.add_argument(
+        "--instance",
+        help="Optional gateway instance name used to isolate PID/status/log files",
+    )
+    gateway_run.add_argument(
+        "--no-cron",
+        action="store_true",
+        help="Disable the in-process cron ticker for this gateway instance",
+    )
     
     # gateway start
     gateway_start = gateway_subparsers.add_parser("start", help="Start gateway service")
@@ -4682,6 +4697,9 @@ For more help on a command:
 
     # cron tick (mostly for debugging)
     cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
+
+    cron_daemon = cron_subparsers.add_parser("daemon", help="Run the cron scheduler loop in foreground")
+    cron_daemon.add_argument("--interval", type=int, default=60, help="Tick interval in seconds (default: 60)")
 
     cron_parser.set_defaults(func=cmd_cron)
 

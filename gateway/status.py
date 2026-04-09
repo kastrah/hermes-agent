@@ -25,15 +25,30 @@ _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
 
 
+def _get_gateway_instance() -> str:
+    """Return a sanitized gateway instance name from the environment."""
+    raw = str(os.getenv("HERMES_GATEWAY_INSTANCE", "") or "").strip()
+    if not raw:
+        return ""
+    safe = "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "-" for ch in raw)
+    safe = safe.strip("-_")
+    return safe.lower()
+
+
+def _instance_suffix() -> str:
+    instance = _get_gateway_instance()
+    return f"-{instance}" if instance else ""
+
+
 def _get_pid_path() -> Path:
     """Return the path to the gateway PID file, respecting HERMES_HOME."""
     home = get_hermes_home()
-    return home / "gateway.pid"
+    return home / f"gateway{_instance_suffix()}.pid"
 
 
 def _get_runtime_status_path() -> Path:
     """Return the persisted runtime health/status file path."""
-    return _get_pid_path().with_name(_RUNTIME_STATUS_FILE)
+    return _get_pid_path().with_name(f"gateway_state{_instance_suffix()}.json")
 
 
 def _get_lock_dir() -> Path:

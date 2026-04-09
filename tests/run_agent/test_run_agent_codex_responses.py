@@ -374,6 +374,95 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_completed_empty_output_falls_back_to_stream_create(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    empty_completed = SimpleNamespace(
+        output=[],
+        status="completed",
+        usage=SimpleNamespace(input_tokens=1, output_tokens=0, total_tokens=1),
+        model="gpt-5.4-mini-2026-03-17",
+    )
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _FakeResponsesStream(final_response=empty_completed)
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        assert kwargs.get("stream") is True
+        return _FakeCreateStream(
+            [
+                SimpleNamespace(type="response.in_progress"),
+                SimpleNamespace(type="response.completed", response=_codex_message_response("stream create fallback ok")),
+            ]
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert calls["stream"] == 1
+    assert calls["create"] == 1
+    assert response.output[0].content[0].text == "stream create fallback ok"
+
+
+def test_run_codex_stream_recovers_text_when_completed_payload_output_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0, "create": 0}
+
+    empty_completed = SimpleNamespace(
+        output=[],
+        status="completed",
+        usage=SimpleNamespace(input_tokens=3, output_tokens=1, total_tokens=4),
+        model="gpt-5.1-codex-mini",
+    )
+
+    class _DeltaThenEmptyFinalStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter(
+                [
+                    SimpleNamespace(type="response.output_text.delta", delta="OK"),
+                    SimpleNamespace(type="response.output_text.done"),
+                    SimpleNamespace(type="response.completed"),
+                ]
+            )
+
+        def get_final_response(self):
+            return empty_completed
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        return _DeltaThenEmptyFinalStream()
+
+    def _fake_create(**kwargs):
+        calls["create"] += 1
+        return _codex_message_response("should not need create fallback")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=_fake_create,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert calls["stream"] == 1
+    assert calls["create"] == 0
+    assert response.output[0].content[0].text == "OK"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

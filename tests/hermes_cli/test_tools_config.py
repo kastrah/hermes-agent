@@ -129,6 +129,15 @@ def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
     assert _toolset_has_keys("vision") is True
 
 
+def test_toolset_has_keys_for_web_reach_backend(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.load_config",
+        lambda: {"web": {"backend": "reach"}},
+    )
+
+    assert _toolset_has_keys("web") is True
+
+
 def test_save_platform_tools_preserves_mcp_server_names():
     """Ensure MCP server names are preserved when saving platform tools.
 

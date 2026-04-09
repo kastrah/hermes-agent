@@ -173,6 +173,45 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
     assert calls == [(True, True, "alice")]
 
 
+def test_gateway_run_forwards_instance_platforms_and_cron_flags(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        gateway,
+        "run_gateway",
+        lambda verbose=False, replace=False, platforms=None, instance=None, no_cron=False: calls.append(
+            {
+                "verbose": verbose,
+                "replace": replace,
+                "platforms": platforms,
+                "instance": instance,
+                "no_cron": no_cron,
+            }
+        ),
+    )
+
+    gateway.gateway_command(
+        SimpleNamespace(
+            gateway_command="run",
+            verbose=True,
+            replace=True,
+            platforms=["telegram"],
+            instance="telegram-dm",
+            no_cron=True,
+        )
+    )
+
+    assert calls == [
+        {
+            "verbose": True,
+            "replace": True,
+            "platforms": ["telegram"],
+            "instance": "telegram-dm",
+            "no_cron": True,
+        }
+    ]
+
+
 # ---------------------------------------------------------------------------
 # _wait_for_gateway_exit
 # ---------------------------------------------------------------------------

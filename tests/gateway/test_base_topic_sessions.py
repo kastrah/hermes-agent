@@ -108,6 +108,99 @@ class TestBasePlatformTopicSessions:
         assert adapter.get_pending_message(build_session_key(pending_event.source)) == pending_event
 
     @pytest.mark.asyncio
+    async def test_handle_message_queues_obvious_separate_task(self, monkeypatch):
+        adapter = DummyTelegramAdapter()
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+
+        active_event = _make_event("-1001", "10")
+        adapter._active_sessions[build_session_key(active_event.source)] = asyncio.Event()
+
+        scheduled = []
+
+        def fake_create_task(coro):
+            scheduled.append(coro)
+            coro.close()
+            return SimpleNamespace()
+
+        monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+        queued_event = MessageEvent(
+            text="After this, also review the pricing page.",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="-1001",
+                chat_type="group",
+                thread_id="10",
+            ),
+            message_id="2",
+        )
+
+        await adapter.handle_message(queued_event)
+
+        assert scheduled == []
+        assert not adapter._active_sessions[build_session_key(queued_event.source)].is_set()
+        assert adapter.get_pending_message(build_session_key(queued_event.source)) == queued_event
+
+    @pytest.mark.asyncio
+    async def test_handle_message_steers_correction_follow_up(self, monkeypatch):
+        adapter = DummyTelegramAdapter()
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result=None))
+
+        active_event = _make_event("-1001", "10")
+        adapter._active_sessions[build_session_key(active_event.source)] = asyncio.Event()
+
+        monkeypatch.setattr(asyncio, "create_task", lambda coro: coro)
+
+        steer_event = MessageEvent(
+            text="Actually, switch to the second option instead.",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="-1001",
+                chat_type="group",
+                thread_id="10",
+            ),
+            message_id="3",
+        )
+
+        await adapter.handle_message(steer_event)
+
+        assert adapter._active_sessions[build_session_key(steer_event.source)].is_set()
+        assert adapter.get_pending_message(build_session_key(steer_event.source)) == steer_event
+
+    @pytest.mark.asyncio
+    async def test_sethome_bypasses_busy_session_queue(self, monkeypatch):
+        adapter = DummyTelegramAdapter()
+        adapter.set_message_handler(lambda event: asyncio.sleep(0, result="ok"))
+
+        active_event = _make_event("-1001", "10")
+        adapter._active_sessions[build_session_key(active_event.source)] = asyncio.Event()
+
+        scheduled = []
+
+        def fake_create_task(coro):
+            scheduled.append(coro)
+            coro.close()
+            return SimpleNamespace()
+
+        monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+        sethome_event = MessageEvent(
+            text="/sethome",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="-1001",
+                chat_type="group",
+                thread_id="10",
+            ),
+            message_id="3",
+        )
+
+        await adapter.handle_message(sethome_event)
+
+        assert len(scheduled) == 1
+        assert adapter._pending_messages == {}
+
+    @pytest.mark.asyncio
     async def test_process_message_background_replies_in_same_topic(self):
         adapter = DummyTelegramAdapter()
         typing_calls = []
