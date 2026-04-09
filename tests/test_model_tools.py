@@ -74,6 +74,25 @@ class TestHandleFunctionCall:
             ),
         ]
 
+    def test_accepts_honcho_runtime_context_without_forwarding_it(self):
+        with patch("model_tools.registry.dispatch", return_value='{\"ok\":true}') as mock_dispatch:
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                honcho_manager=object(),
+                honcho_session_key="session-key",
+                honcho_config=object(),
+            )
+
+        assert result == '{"ok":true}'
+        assert mock_dispatch.call_count == 1
+        _, kwargs = mock_dispatch.call_args
+        assert kwargs["task_id"] == "task-1"
+        assert "honcho_manager" not in kwargs
+        assert "honcho_session_key" not in kwargs
+        assert "honcho_config" not in kwargs
+
 
 # =========================================================================
 # Agent loop tools
