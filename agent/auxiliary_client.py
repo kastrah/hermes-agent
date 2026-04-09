@@ -889,6 +889,20 @@ def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain: OpenRouter → Nous → custom → Codex → API-key → None."""
     global auxiliary_is_nous
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
+
+    # ── Step 1: non-aggregator main provider → use main model directly ──
+    main_provider = _read_main_provider()
+    main_model = _read_main_model()
+    if (main_provider and main_model
+            and main_provider not in _AGGREGATOR_PROVIDERS
+            and main_provider not in ("auto", "")):
+        client, resolved = resolve_provider_client(main_provider, main_model)
+        if client is not None:
+            logger.info("Auxiliary auto-detect: using main provider %s (%s)",
+                        main_provider, resolved or main_model)
+            return client, resolved or main_model
+
+    # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
     for try_fn in (_try_openrouter, _try_nous, _try_custom_endpoint,
                    _try_codex, _resolve_api_key_provider):
