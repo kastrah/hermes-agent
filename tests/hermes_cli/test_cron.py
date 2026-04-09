@@ -4,6 +4,7 @@ from argparse import Namespace
 
 import pytest
 
+import hermes_cli.cron as cron_cli
 from cron.jobs import create_job, get_job, list_jobs
 from hermes_cli.cron import cron_command
 
@@ -105,3 +106,17 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "find-nearby"]
         assert jobs[0]["name"] == "Skill combo"
+
+    def test_daemon_invokes_tick_loop(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr("cron.scheduler.tick", lambda verbose=True: calls.append(verbose))
+
+        def fake_sleep(seconds):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(cron_cli.time, "sleep", fake_sleep)
+
+        cron_command(Namespace(cron_command="daemon", interval=5))
+
+        assert calls == [True]

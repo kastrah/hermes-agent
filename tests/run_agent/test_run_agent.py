@@ -1877,6 +1877,135 @@ class TestRunConversation:
         assert result["final_response"] is not None
         assert "Thinking Budget Exhausted" in result["final_response"]
 
+    def test_codex_empty_output_incomplete_max_tokens_detected_as_thinking_exhausted(self, agent):
+        """Codex Responses API can return empty output with status=incomplete."""
+        self._setup_agent(agent)
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.model = "gpt-5.4-mini"
+
+        codex_resp = SimpleNamespace(
+            output=[],
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+            usage=None,
+            model="gpt-5.4-mini-2026-03-17",
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", return_value=codex_resp) as mock_api_call,
+        ):
+            result = agent.run_conversation("hello")
+
+        # Should not classify this as malformed and retry; it's token exhaustion.
+        assert mock_api_call.call_count == 1
+        assert result["completed"] is False
+        assert result["final_response"] is not None
+        assert "Thinking Budget Exhausted" in result["final_response"]
+
+    def test_codex_empty_completed_output_auto_falls_back_model_and_recovers(self, agent):
+        """Empty completed Codex responses should trigger one model downgrade retry."""
+        self._setup_agent(agent)
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.model = "gpt-5.4-mini"
+
+        empty_completed = SimpleNamespace(
+            output=[],
+            status="completed",
+            incomplete_details=None,
+            error=None,
+            usage=None,
+            model="gpt-5.4-mini-2026-03-17",
+        )
+        good = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="Recovered on fallback model")],
+                )
+            ],
+            status="completed",
+            usage=None,
+            model="gpt-5.3-codex",
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", side_effect=[empty_completed, good]) as mock_api_call,
+        ):
+            result = agent.run_conversation("hello")
+
+        assert mock_api_call.call_count == 2
+        assert agent.model == "gpt-5.3-codex"
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered on fallback model"
+
+    def test_codex_empty_completed_output_walks_fallback_ladder(self, agent):
+        """Codex empty completed output should continue across multiple fallback models."""
+        self._setup_agent(agent)
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.model = "gpt-5.4-mini"
+
+        empty_54 = SimpleNamespace(output=[], status="completed", incomplete_details=None, error=None, usage=None, model="gpt-5.4-mini-2026-03-17")
+        empty_53 = SimpleNamespace(output=[], status="completed", incomplete_details=None, error=None, usage=None, model="gpt-5.3-codex")
+        good_52 = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="Recovered on second fallback")],
+                )
+            ],
+            status="completed",
+            usage=None,
+            model="gpt-5.2-codex",
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", side_effect=[empty_54, empty_53, good_52]) as mock_api_call,
+        ):
+            result = agent.run_conversation("hello")
+
+        assert mock_api_call.call_count == 3
+        assert agent.model == "gpt-5.2-codex"
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered on second fallback"
+
+    def test_codex_empty_completed_output_does_not_cycle_after_exhausting_ladder(self, agent):
+        """Codex empty completed output should not restart the ladder within the same turn."""
+        self._setup_agent(agent)
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.model = "gpt-5.1-codex-max"
+
+        empty_max = SimpleNamespace(output=[], status="completed", incomplete_details=None, error=None, usage=None, model="gpt-5.1-codex-max")
+        empty_53 = SimpleNamespace(output=[], status="completed", incomplete_details=None, error=None, usage=None, model="gpt-5.3-codex")
+        empty_52 = SimpleNamespace(output=[], status="completed", incomplete_details=None, error=None, usage=None, model="gpt-5.2-codex")
+        empty_51mini = SimpleNamespace(output=[], status="completed", incomplete_details=None, error=None, usage=None, model="gpt-5.1-codex-mini")
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", side_effect=[empty_max, empty_53, empty_52, empty_51mini]) as mock_api_call,
+        ):
+            result = agent.run_conversation("hello")
+
+        assert mock_api_call.call_count == 4
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert "empty output across all fallback models" in result["error"]
+        assert agent.model == "gpt-5.1-codex-mini"
+
 
 class TestRetryExhaustion:
     """Regression: retry_count > max_retries was dead code (off-by-one).

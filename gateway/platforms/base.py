@@ -14,7 +14,6 @@ import subprocess
 import sys
 import uuid
 from abc import ABC, abstractmethod
-from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +150,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
+from hermes_cli.config import get_hermes_home
 from hermes_constants import get_hermes_dir
 
 
@@ -160,41 +160,67 @@ GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
 )
 
 
-def _safe_url_for_log(url: str, max_len: int = 80) -> str:
-    """Return a URL string safe for logs (no query/fragment/userinfo)."""
-    if max_len <= 0:
-        return ""
+# Commands that should bypass the normal "session busy" queue and run
+# immediately even while an agent turn is in flight. These are lightweight
+# gateway-side commands that do not depend on the active agent state.
+_OUT_OF_BAND_COMMANDS = {"sethome"}
 
-    if url is None:
-        return ""
+# Heuristics for busy-session triage.
+#
+# The goal is not perfect NLP; it is to split obvious "keep working on the
+# current task" follow-ups from obvious "do this later as a separate task"
+# requests so Telegram and other messaging surfaces can steer or queue without
+# forcing the user to remember /queue every time.
+_BUSY_QUEUE_PHRASES = (
+    "after this",
+    "after you're done",
+    "after you are done",
+    "another thing",
+    "also later",
+    "do this after",
+    "for later",
+    "follow up",
+    "later",
+    "next task",
+    "not now",
+    "put this aside",
+    "queue this",
+    "remind me later",
+    "separately",
+    "set aside",
+    "skip for now",
+    "todo",
+    "when you're done",
+    "when you are done",
+    "while you're at it",
+    "while you are at it",
+)
 
-    raw = str(url)
-    if not raw:
-        return ""
-
-    try:
-        parsed = urlsplit(raw)
-    except Exception:
-        return raw[:max_len]
-
-    if parsed.scheme and parsed.netloc:
-        # Strip potential embedded credentials (user:pass@host).
-        netloc = parsed.netloc.rsplit("@", 1)[-1]
-        base = f"{parsed.scheme}://{netloc}"
-        path = parsed.path or ""
-        if path and path != "/":
-            basename = path.rsplit("/", 1)[-1]
-            safe = f"{base}/.../{basename}" if basename else f"{base}/..."
-        else:
-            safe = base
-    else:
-        safe = raw
-
-    if len(safe) <= max_len:
-        return safe
-    if max_len <= 3:
-        return "." * max_len
-    return f"{safe[:max_len - 3]}..."
+_BUSY_STEER_PHRASES = (
+    "actually",
+    "adjust",
+    "change",
+    "correction",
+    "fix",
+    "forget that",
+    "hold on",
+    "i mean",
+    "instead",
+    "make it",
+    "modify",
+    "never mind",
+    "nevermind",
+    "no,",
+    "not that",
+    "redo",
+    "revise",
+    "scratch that",
+    "switch",
+    "try again",
+    "update",
+    "use the",
+    "wait",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -248,14 +274,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
 
     Returns:
         Absolute path to the cached image file as a string.
-
-    Raises:
-        ValueError: If the URL targets a private/internal network (SSRF protection).
     """
-    from tools.url_safety import is_safe_url
-    if not is_safe_url(url):
-        raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
-
     import asyncio
     import httpx
     import logging as _logging
@@ -280,14 +299,8 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     raise
                 if attempt < retries:
                     wait = 1.5 * (attempt + 1)
-                    _log.debug(
-                        "Media cache retry %d/%d for %s (%.1fs): %s",
-                        attempt + 1,
-                        retries,
-                        _safe_url_for_log(url),
-                        wait,
-                        exc,
-                    )
+                    _log.debug("Media cache retry %d/%d for %s (%.1fs): %s",
+                               attempt + 1, retries, url[:80], wait, exc)
                     await asyncio.sleep(wait)
                     continue
                 raise
@@ -363,14 +376,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
 
     Returns:
         Absolute path to the cached audio file as a string.
-
-    Raises:
-        ValueError: If the URL targets a private/internal network (SSRF protection).
     """
-    from tools.url_safety import is_safe_url
-    if not is_safe_url(url):
-        raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
-
     import asyncio
     import httpx
     import logging as _logging
@@ -395,14 +401,8 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     raise
                 if attempt < retries:
                     wait = 1.5 * (attempt + 1)
-                    _log.debug(
-                        "Audio cache retry %d/%d for %s (%.1fs): %s",
-                        attempt + 1,
-                        retries,
-                        _safe_url_for_log(url),
-                        wait,
-                        exc,
-                    )
+                    _log.debug("Audio cache retry %d/%d for %s (%.1fs): %s",
+                               attempt + 1, retries, url[:80], wait, exc)
                     await asyncio.sleep(wait)
                     continue
                 raise
@@ -422,8 +422,6 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
-    ".log": "text/plain",
-    ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -532,10 +530,6 @@ class MessageEvent:
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
     
-    # Internal flag — set for synthetic events (e.g. background process
-    # completion notifications) that must bypass user authorization checks.
-    internal: bool = False
-
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -569,26 +563,23 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
-    retryable: bool = False  # True for transient connection errors — base will retry automatically
+    retryable: bool = False  # True for transient errors (network, timeout) — base will retry automatically
 
 
-# Error substrings that indicate a transient *connection* failure worth retrying.
-# "timeout" / "timed out" / "readtimeout" / "writetimeout" are intentionally
-# excluded: a read/write timeout on a non-idempotent call (e.g. send_message)
-# means the request may have reached the server — retrying risks duplicate
-# delivery.  "connecttimeout" is safe because the connection was never
-# established.  Platforms that know a timeout is safe to retry should set
-# SendResult.retryable = True explicitly.
+# Error substrings that indicate a transient network failure worth retrying
 _RETRYABLE_ERROR_PATTERNS = (
     "connecterror",
     "connectionerror",
     "connectionreset",
     "connectionrefused",
-    "connecttimeout",
+    "timeout",
+    "timed out",
     "network",
     "broken pipe",
     "remotedisconnected",
     "eoferror",
+    "readtimeout",
+    "writetimeout",
 )
 
 
@@ -616,6 +607,9 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
+        # Callback for steering a running agent (set by GatewayRunner)
+        # Signature: async def steer_handler(session_key: str, message: str) -> None
+        self._steer_handler: Optional[Callable[[str, str], Awaitable[None] | None]] = None
         
         # Track active message handlers per session for interrupt support
         # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
@@ -627,9 +621,6 @@ class BasePlatformAdapter(ABC):
         self._background_tasks: set[asyncio.Task] = set()
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
-        # Chats where typing indicator is paused (e.g. during approval waits).
-        # _keep_typing skips send_typing when the chat_id is in this set.
-        self._typing_paused: set = set()
 
     @property
     def has_fatal_error(self) -> bool:
@@ -649,6 +640,15 @@ class BasePlatformAdapter(ABC):
 
     def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
         self._fatal_error_handler = handler
+
+    def set_steer_handler(self, handler: Callable[[str, str], Awaitable[None] | None]) -> None:
+        """
+        Set the handler for steering a running agent.
+        
+        The handler receives (session_key, message) and should call
+        agent.steer(message) on the appropriate running agent.
+        """
+        self._steer_handler = handler
 
     def _mark_connected(self) -> None:
         self._running = True
@@ -713,16 +713,6 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
-    
-    def set_session_store(self, session_store: Any) -> None:
-        """
-        Set the session store for checking active sessions.
-        
-        Used by adapters that need to check if a thread/conversation
-        has an active session before processing messages (e.g., Slack
-        thread replies without explicit mentions).
-        """
-        self._session_store = session_store
     
     @abstractmethod
     async def connect(self) -> bool:
@@ -1089,16 +1079,10 @@ class BasePlatformAdapter(ABC):
         
         Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
         to recover quickly after progress messages interrupt it.
-        
-        Skips send_typing when the chat is in ``_typing_paused`` (e.g. while
-        the agent is waiting for dangerous-command approval).  This is critical
-        for Slack's Assistant API where ``assistant_threads_setStatus`` disables
-        the compose box — pausing lets the user type ``/approve`` or ``/deny``.
         """
         try:
             while True:
-                if chat_id not in self._typing_paused:
-                    await self.send_typing(chat_id, metadata=metadata)
+                await self.send_typing(chat_id, metadata=metadata)
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
@@ -1112,20 +1096,7 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(chat_id)
                 except Exception:
                     pass
-            self._typing_paused.discard(chat_id)
-
-    def pause_typing_for_chat(self, chat_id: str) -> None:
-        """Pause typing indicator for a chat (e.g. during approval waits).
-
-        Thread-safe (CPython GIL) — can be called from the sync agent thread
-        while ``_keep_typing`` runs on the async event loop.
-        """
-        self._typing_paused.add(chat_id)
-
-    def resume_typing_for_chat(self, chat_id: str) -> None:
-        """Resume typing indicator for a chat after approval resolves."""
-        self._typing_paused.discard(chat_id)
-
+    
     # ── Processing lifecycle hooks ──────────────────────────────────────────
     # Subclasses override these to react to message processing events
     # (e.g. Discord adds 👀/✅/❌ reactions).
@@ -1153,18 +1124,6 @@ class BasePlatformAdapter(ABC):
             return False
         lowered = error.lower()
         return any(pat in lowered for pat in _RETRYABLE_ERROR_PATTERNS)
-
-    @staticmethod
-    def _is_timeout_error(error: Optional[str]) -> bool:
-        """Return True if the error string indicates a read/write timeout.
-
-        Timeout errors are NOT retryable and should NOT trigger plain-text
-        fallback — the request may have already been delivered.
-        """
-        if not error:
-            return False
-        lowered = error.lower()
-        return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
 
     async def _send_with_retry(
         self,
@@ -1196,11 +1155,6 @@ class BasePlatformAdapter(ABC):
 
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
-
-        # Timeout errors are not safe to retry (message may have been
-        # delivered) and not formatting errors — return the failure as-is.
-        if not is_network and self._is_timeout_error(error_str):
-            return result
 
         if is_network:
             # Retry with exponential backoff for transient errors
@@ -1248,22 +1202,6 @@ class BasePlatformAdapter(ABC):
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
 
-    @staticmethod
-    def _merge_caption(existing_text: Optional[str], new_text: str) -> str:
-        """Merge a new caption into existing text, avoiding duplicates.
-
-        Uses line-by-line exact match (not substring) to prevent false positives
-        where a shorter caption is silently dropped because it appears as a
-        substring of a longer one (e.g. "Meeting" inside "Meeting agenda").
-        Whitespace is normalised for comparison.
-        """
-        if not existing_text:
-            return new_text
-        existing_captions = [c.strip() for c in existing_text.split("\n\n")]
-        if new_text.strip() not in existing_captions:
-            return f"{existing_text}\n\n{new_text}".strip()
-        return existing_text
-
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -1278,70 +1216,77 @@ class BasePlatformAdapter(ABC):
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
+
+        command = event.get_command()
+        canonical_command = command
+        if command:
+            try:
+                from hermes_cli.commands import resolve_command as _resolve_command
+                _cmd = _resolve_command(command)
+                if _cmd:
+                    canonical_command = _cmd.name
+            except Exception:
+                pass
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
-            # Certain commands must bypass the active-session guard and be
-            # dispatched directly to the gateway runner.  Without this, they
-            # are queued as pending messages and either:
-            #   - leak into the conversation as user text (/stop, /new), or
-            #   - deadlock (/approve, /deny — agent is blocked on Event.wait)
-            #
-            # Dispatch inline: call the message handler directly and send the
-            # response.  Do NOT use _process_message_background — it manages
-            # session lifecycle and its cleanup races with the running task
-            # (see PR #4926).
-            cmd = event.get_command()
-            if cmd in ("approve", "deny", "status", "stop", "new", "reset"):
+            if canonical_command in _OUT_OF_BAND_COMMANDS:
                 logger.debug(
-                    "[%s] Command '/%s' bypassing active-session guard for %s",
-                    self.name, cmd, session_key,
+                    "[%s] Processing out-of-band command %s immediately for busy session %s",
+                    self.name,
+                    canonical_command,
+                    session_key,
+                )
+                task = asyncio.create_task(
+                    self._process_message_background(
+                        event,
+                        f"{session_key}::cmd::{uuid.uuid4().hex[:8]}",
+                    )
                 )
                 try:
-                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-                    response = await self._message_handler(event)
-                    if response:
-                        await self._send_with_retry(
-                            chat_id=event.source.chat_id,
-                            content=response,
-                            reply_to=event.message_id,
-                            metadata=_thread_meta,
-                        )
-                except Exception as e:
-                    logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
+                    self._background_tasks.add(task)
+                except TypeError:
+                    return
+                if hasattr(task, "add_done_callback"):
+                    task.add_done_callback(self._background_tasks.discard)
                 return
+
+            route = self._busy_followup_route(event)
 
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
-            if event.message_type == MessageType.PHOTO:
-                logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
+            if route == "queue":
+                logger.debug("[%s] Queuing busy follow-up for session %s without interrupt", self.name, session_key)
                 existing = self._pending_messages.get(session_key)
                 if existing and existing.message_type == MessageType.PHOTO:
                     existing.media_urls.extend(event.media_urls)
                     existing.media_types.extend(event.media_types)
                     if event.text:
-                        existing.text = self._merge_caption(existing.text, event.text)
+                        if not existing.text:
+                            existing.text = event.text
+                        elif event.text not in existing.text:
+                            existing.text = f"{existing.text}\n\n{event.text}".strip()
                 else:
                     self._pending_messages[session_key] = event
-                return  # Don't interrupt now - will run after current task completes
+                return  # Don't interrupt now - will run after current task finishes
 
-            # Default behavior for non-photo follow-ups: interrupt the running agent
-            logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
-            self._pending_messages[session_key] = event
-            # Signal the interrupt (the processing task checks this)
-            self._active_sessions[session_key].set()
-            return  # Don't process now - will be handled after current task finishes
+            # Default for amendments / clarifications: steer the running agent
+            # so the current task can be updated with the new detail.
+            logger.debug("[%s] Steering active session %s with follow-up message", self.name, session_key)
+            # Call steer handler if available (new behavior), otherwise fall back to interrupt
+            if self._steer_handler:
+                message_text = event.text or ""
+                result = self._steer_handler(session_key, message_text)
+                if asyncio.iscoroutine(result):
+                    asyncio.create_task(result)
+            else:
+                # Fallback: signal the interrupt (the processing task checks this)
+                self._pending_messages[session_key] = event
+                self._active_sessions[session_key].set()
+            return  # Steering is handled - no further processing needed
         
-        # Mark session as active BEFORE spawning background task to close
-        # the race window where a second message arriving before the task
-        # starts would also pass the _active_sessions check and spawn a
-        # duplicate task.  (grammY sequentialize / aiogram EventIsolation
-        # pattern — set the guard synchronously, not inside the task.)
-        self._active_sessions[session_key] = asyncio.Event()
-
         # Spawn background task to process this message
         task = asyncio.create_task(self._process_message_background(event, session_key))
         try:
@@ -1388,10 +1333,8 @@ class BasePlatformAdapter(ABC):
             if getattr(result, "success", False):
                 delivery_succeeded = True
 
-        # Reuse the interrupt event set by handle_message() (which marks
-        # the session active before spawning this task to prevent races).
-        # Fall back to a new Event only if the entry was removed externally.
-        interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
+        # Create interrupt event for this session
+        interrupt_event = asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
@@ -1404,12 +1347,9 @@ class BasePlatformAdapter(ABC):
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             
-            # Send response if any.  A None/empty response is normal when
-            # streaming already delivered the text (already_sent=True) or
-            # when the message was queued behind an active agent.  Log at
-            # DEBUG to avoid noisy warnings for expected behavior.
+            # Send response if any
             if not response:
-                logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
@@ -1485,12 +1425,7 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
-                        logger.info(
-                            "[%s] Sending image: %s (alt=%s)",
-                            self.name,
-                            _safe_url_for_log(image_url),
-                            alt_text[:30] if alt_text else "",
-                        )
+                        logger.info("[%s] Sending image: %s (alt=%s)", self.name, image_url[:80], alt_text[:30] if alt_text else "")
                         # Route animated GIFs through send_animation for proper playback
                         if self._is_animation_url(image_url):
                             img_result = await self.send_animation(
@@ -1660,6 +1595,39 @@ class BasePlatformAdapter(ABC):
     def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
         """Get and clear any pending message for a session."""
         return self._pending_messages.pop(session_key, None)
+
+    @staticmethod
+    def _busy_followup_route(event: MessageEvent) -> str:
+        """Classify a busy-session follow-up as 'steer' or 'queue'.
+
+        The classifier is intentionally lightweight and deterministic:
+        - Queue obvious separate-task language.
+        - Steer corrections / amendments / clarifications back into the active run.
+        - Default to steer so the assistant remains responsive unless the user
+          clearly signals that this is a new task.
+        """
+        if event.message_type == MessageType.PHOTO:
+            return "queue"
+
+        text = (event.text or "").strip().lower()
+        if not text:
+            return "queue"
+
+        if any(phrase in text for phrase in _BUSY_QUEUE_PHRASES):
+            return "queue"
+
+        if any(phrase in text for phrase in _BUSY_STEER_PHRASES):
+            return "steer"
+
+        if getattr(event, "reply_to_text", None):
+            return "steer"
+
+        # Short follow-ups are usually amendments, not new tasks.
+        if len(text) <= 120:
+            return "steer"
+
+        # Longer messages are more likely to contain a second request.
+        return "queue"
     
     def build_source(
         self,

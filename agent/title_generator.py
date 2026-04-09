@@ -6,6 +6,7 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
+from datetime import datetime
 from typing import Optional
 
 from agent.auxiliary_client import call_llm
@@ -62,18 +63,15 @@ def auto_title_session(
     user_message: str,
     assistant_response: str,
 ) -> None:
-    """Generate and set a session title if one doesn't already exist.
+    """Set a date-based session title if one doesn't already exist.
 
     Called in a background thread after the first exchange completes.
-    Silently skips if:
-    - session_db is None
-    - session already has a title (user-set or previously auto-generated)
-    - title generation fails
+    Primary naming convention is YYYY-MM-DD. If multiple sessions are created
+    on the same day, numbered continuations are used (e.g. YYYY-MM-DD #2).
     """
     if not session_db or not session_id:
         return
 
-    # Check if title already exists (user may have set one via /title before first response)
     try:
         existing = session_db.get_session_title(session_id)
         if existing:
@@ -81,11 +79,12 @@ def auto_title_session(
     except Exception:
         return
 
-    title = generate_title(user_message, assistant_response)
-    if not title:
-        return
+    base_title = datetime.now().date().isoformat()
+    title = base_title
 
     try:
+        if session_db.get_session_by_title(base_title) is not None:
+            title = session_db.get_next_title_in_lineage(base_title)
         session_db.set_session_title(session_id, title)
         logger.debug("Auto-generated session title: %s", title)
     except Exception as e:

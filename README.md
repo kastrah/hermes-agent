@@ -62,6 +62,29 @@ hermes doctor       # Diagnose any issues
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
+## No-API Web Access
+
+Hermes can now access the web without premium search APIs. If you choose the `No-API Web Reach` provider in `hermes tools`, the built-in `web_search` and `web_extract` tools use:
+
+- DuckDuckGo HTML search for result discovery
+- Jina Reader for readable page extraction
+- Channel-aware adapters for supported sources such as X/Twitter, LinkedIn, Reddit, GitHub, YouTube, Bilibili, RSS/Atom, and V2EX
+
+You can also steer `web_search` toward a specific source with prefixes like `twitter:`, `x:`, `linkedin:`, `reddit:`, `github:`, `youtube:`, `bilibili:`, or `v2ex:`. The `web_reach_doctor` tool reports which optional adapters are currently available, such as `gh`, `yt-dlp`, or richer LinkedIn auth through cookies or a configured MCP connector.
+
+This keeps the same tool names and agent workflow, while letting low-cost or self-hosted deployments keep basic web access turned on by default and richer public-web adapters light up automatically when local tools are present. For example:
+
+- X/Twitter prefers `bird` from [jawond/bird](https://github.com/jawond/bird) when installed and ready, otherwise falls back to public web reads
+- LinkedIn prefers session cookies from Chrome or `LINKEDIN_LI_AT` and `LINKEDIN_JSESSIONID` when paired with the `linkedin_api` Python package, otherwise it can use a configured `mcporter` LinkedIn connector before falling back to public web reads
+- GitHub prefers `gh` when available
+- YouTube and Bilibili prefer `yt-dlp` when available
+
+If you want Hermes to include the richer LinkedIn cookie adapter in a fresh install, add the optional extra:
+
+```bash
+pip install -e ".[web-reach]"
+```
+
 ## CLI vs Messaging Quick Reference
 
 Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
@@ -77,6 +100,23 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Browse skills | `/skills` or `/<skill-name>` | `/skills` or `/<skill-name>` |
 | Interrupt current work | `Ctrl+C` or send a new message | `/stop` or send a new message |
 | Platform-specific status | `/platforms` | `/status`, `/sethome` |
+
+## Isolated Messaging Deployment
+
+If you use Telegram for direct chats and Discord for separate channel/thread work, avoid running cron-heavy automation inside the same gateway process. Hermes supports splitting transport processes while keeping one shared `HERMES_HOME`:
+
+```bash
+# Telegram DM gateway
+hermes gateway run --instance telegram-dm --platform telegram --no-cron
+
+# Discord workspace gateway
+hermes gateway run --instance discord-lab --platform discord --no-cron
+
+# Dedicated cron worker
+hermes cron daemon
+```
+
+This keeps cross-platform memory and delivery intact while reducing the chance that a Discord stall or a scheduled job makes Telegram feel hung.
 
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
 

@@ -18,6 +18,15 @@ class TestGatewayPidState:
         assert isinstance(payload["argv"], list)
         assert payload["argv"]
 
+    def test_write_pid_file_uses_instance_suffix_when_configured(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_GATEWAY_INSTANCE", "telegram-dm")
+
+        status.write_pid_file()
+
+        payload = json.loads((tmp_path / "gateway-telegram-dm.pid").read_text())
+        assert payload["pid"] == os.getpid()
+
     def test_get_running_pid_rejects_live_non_gateway_pid(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
@@ -102,6 +111,16 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["state"] == "fatal"
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
+
+    def test_write_runtime_status_uses_instance_specific_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_GATEWAY_INSTANCE", "discord-lab")
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = json.loads((tmp_path / "gateway_state-discord-lab.json").read_text())
+        assert payload["gateway_state"] == "running"
+        assert payload["pid"] == os.getpid()
 
 
 class TestScopedLocks:

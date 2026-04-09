@@ -513,9 +513,12 @@ class CredentialPool:
                     except Exception as wexc:
                         logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
             elif self.provider == "openai-codex":
-                refreshed = auth_mod.refresh_codex_oauth_pure(
-                    entry.access_token,
-                    entry.refresh_token,
+                refreshed = auth_mod._refresh_codex_auth_tokens(
+                    {
+                        "access_token": entry.access_token,
+                        "refresh_token": entry.refresh_token,
+                    },
+                    timeout_seconds=20.0,
                 )
                 updated = replace(
                     entry,
