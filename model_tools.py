@@ -464,6 +464,9 @@ def handle_function_call(
     session_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    honcho_manager: Optional[Any] = None,
+    honcho_session_key: Optional[str] = None,
+    honcho_config: Optional[Any] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -477,12 +480,25 @@ def handle_function_call(
                        execute_code uses this list to determine which sandbox
                        tools to generate.  Falls back to the process-global
                        ``_last_resolved_tool_names`` for backward compat.
+        honcho_manager: Reserved runtime context from the agent loop. Accepted
+                        for compatibility with newer callers; not forwarded to
+                        generic tool handlers because most tool signatures do
+                        not accept it.
+        honcho_session_key: Reserved Honcho session context from the agent
+                            loop. Accepted for compatibility.
+        honcho_config: Reserved Honcho config context from the agent loop.
+                       Accepted for compatibility.
 
     Returns:
         Function result as a JSON string.
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+
+    # Newer agent-loop callers can supply Honcho runtime context here.
+    # Keep accepting it so tool dispatch doesn't crash, but do not forward it
+    # through the generic registry path unless/ until individual tools opt in.
+    _ = (honcho_manager, honcho_session_key, honcho_config)
 
     # Notify the read-loop tracker when a non-read/search tool runs,
     # so the *consecutive* counter resets (reads after other work are fine).
