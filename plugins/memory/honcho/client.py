@@ -209,6 +209,28 @@ class HonchoClientConfig:
     # stray HONCHO_API_KEY env var.
     explicitly_configured: bool = False
 
+    @property
+    def memory_mode(self) -> str:
+        """Backward-compat alias for older callers expecting memory_mode.
+
+        Honcho now exposes ``recall_mode`` ("hybrid" / "context" / "tools").
+        Older runtime code still reads ``memory_mode`` and expects "hybrid"
+        semantics by default.
+        """
+        return self.recall_mode
+
+    def peer_memory_mode(self, peer_name: str | None) -> str:
+        """Backward-compat per-peer memory mode helper.
+
+        Legacy callers distinguished per-peer local-vs-Honcho write behavior.
+        The current Honcho config no longer exposes per-peer memory modes, so
+        preserve the old interface with conservative mapping:
+        - ``tools``   -> ``honcho`` (no auto-injected context, rely on Honcho)
+        - everything else -> ``hybrid``
+        """
+        _ = peer_name
+        return "honcho" if self.recall_mode == "tools" else "hybrid"
+
     @classmethod
     def from_env(
         cls,

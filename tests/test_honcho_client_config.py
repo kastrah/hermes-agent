@@ -103,3 +103,17 @@ class TestHonchoClientConfigAutoEnable:
 
         assert cfg.api_key == "fallback-key"
         assert cfg.enabled is True  # from_env() sets enabled=True
+
+    def test_backward_compat_memory_mode_aliases(self, tmp_path):
+        """Older runtime callers still expect memory_mode + peer_memory_mode()."""
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({
+            "apiKey": "test-api-key-12345",
+            "recallMode": "tools",
+        }))
+
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+
+        assert cfg.memory_mode == "tools"
+        assert cfg.peer_memory_mode("hermes") == "honcho"
+        assert cfg.peer_memory_mode("user") == "honcho"
