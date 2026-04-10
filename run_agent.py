@@ -78,7 +78,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 # Agent internals extracted to agent/ package for modularity
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, QMD_GUIDANCE, SKILLS_GUIDANCE,
 )
 from agent.model_metadata import (
     fetch_model_metadata,
@@ -223,6 +223,10 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "honcho_context",
     "honcho_profile",
     "honcho_search",
+    "mcp_qmd_get",
+    "mcp_qmd_multi_get",
+    "mcp_qmd_query",
+    "mcp_qmd_status",
     "read_file",
     "search_files",
     "session_search",
@@ -2742,6 +2746,8 @@ class AIAgent:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        if "mcp_qmd_query" in self.valid_tool_names:
+            tool_guidance.append(QMD_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:

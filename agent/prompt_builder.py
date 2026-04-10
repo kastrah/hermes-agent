@@ -161,6 +161,15 @@ SESSION_SEARCH_GUIDANCE = (
     "asking them to repeat themselves."
 )
 
+QMD_GUIDANCE = (
+    "Use QMD MCP tools for local markdown/document retrieval: workspace docs, "
+    "knowledge notes, skills, newsroom files, reports, and other indexed files. "
+    "Prefer mcp_qmd_query with lex searches for exact terms and vec/hyde only "
+    "when embeddings are available and useful; use mcp_qmd_get to open a returned "
+    "document before relying on details. QMD is not durable memory: use memory "
+    "for stable facts/preferences and session_search for past conversation recall."
+)
+
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "
