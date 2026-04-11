@@ -75,28 +75,6 @@ class TestClassifiedError:
         e3 = ClassifiedError(reason=FailoverReason.billing)
         assert e3.is_auth is False
 
-    def test_is_transient_property(self):
-        transient_reasons = [
-            FailoverReason.rate_limit,
-            FailoverReason.overloaded,
-            FailoverReason.server_error,
-            FailoverReason.timeout,
-            FailoverReason.unknown,
-        ]
-        for reason in transient_reasons:
-            e = ClassifiedError(reason=reason)
-            assert e.is_transient is True, f"{reason} should be transient"
-
-        non_transient = [
-            FailoverReason.auth,
-            FailoverReason.billing,
-            FailoverReason.model_not_found,
-            FailoverReason.format_error,
-        ]
-        for reason in non_transient:
-            e = ClassifiedError(reason=reason)
-            assert e.is_transient is False, f"{reason} should NOT be transient"
-
     def test_defaults(self):
         e = ClassifiedError(reason=FailoverReason.unknown)
         assert e.retryable is True
@@ -270,6 +248,22 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
+
+    def test_alibaba_rate_increased_too_quickly(self):
+        """Alibaba/DashScope returns a unique throttling message.
+
+        Port from anomalyco/opencode#21355.
+        """
+        msg = (
+            "Upstream error from Alibaba: Request rate increased too quickly. "
+            "To ensure system stability, please adjust your client logic to "
+            "scale requests more smoothly over time."
+        )
+        e = MockAPIError(msg, status_code=400)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
 
     # ── Server errors ──
 
@@ -479,6 +473,39 @@ class TestClassifyApiError:
         e = Exception("maximum context length exceeded")
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
+
+    # ── Message-only usage limit disambiguation (no status code) ──
+
+    def test_message_usage_limit_transient_is_rate_limit(self):
+        """'usage limit' + 'try again' with no status code → rate_limit, not billing."""
+        e = Exception("usage limit exceeded, try again in 5 minutes")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_message_usage_limit_no_retry_signal_is_billing(self):
+        """'usage limit' with no transient signal and no status code → billing."""
+        e = Exception("usage limit reached")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+
+    def test_message_quota_with_reset_window_is_rate_limit(self):
+        """'quota' + 'resets at' with no status code → rate_limit."""
+        e = Exception("quota exceeded, resets at midnight UTC")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_message_limit_exceeded_with_wait_is_rate_limit(self):
+        """'limit exceeded' + 'wait' with no status code → rate_limit."""
+        e = Exception("key limit exceeded, please wait before retrying")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
 
     # ── Unknown / fallback ──
 
