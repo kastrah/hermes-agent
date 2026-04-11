@@ -83,8 +83,8 @@ CONFIGURABLE_TOOLSETS = [
     ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
-    ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
-    ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("vision",          "👁️  Vision / Media Analysis",  "vision_analyze (image + video)"),
+    ("image_gen",       "🎨 Image / Video Generation",  "image_generate, video_generate"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -143,7 +143,6 @@ PLATFORMS = {
  "dingtalk": {"label": "💬 DingTalk", "default_toolset": "hermes-dingtalk"},
     "feishu": {"label": "🪽 Feishu", "default_toolset": "hermes-feishu"},
     "wecom": {"label": "💬 WeCom", "default_toolset": "hermes-wecom"},
-    "weixin": {"label": "💬 Weixin", "default_toolset": "hermes-weixin"},
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
     "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
 }
@@ -180,14 +179,6 @@ TOOL_CATEGORIES = {
                     {"key": "ELEVENLABS_API_KEY", "prompt": "ElevenLabs API key", "url": "https://elevenlabs.io/app/settings/api-keys"},
                 ],
                 "tts_provider": "elevenlabs",
-            },
-            {
-                "name": "Mistral (Voxtral TTS)",
-                "tag": "Multilingual, native Opus, needs MISTRAL_API_KEY",
-                "env_vars": [
-                    {"key": "MISTRAL_API_KEY", "prompt": "Mistral API key", "url": "https://console.mistral.ai/"},
-                ],
-                "tts_provider": "mistral",
             },
         ],
     },
@@ -479,10 +470,6 @@ def _get_platform_tools(
         default_ts = PLATFORMS[platform]["default_toolset"]
         toolset_names = [default_ts]
 
-    # YAML may parse bare numeric names (e.g. ``12306:``) as int.
-    # Normalise to str so downstream sorted() never mixes types.
-    toolset_names = [str(ts) for ts in toolset_names]
-
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
     # If the saved list contains any configurable keys directly, the user
@@ -540,7 +527,7 @@ def _get_platform_tools(
     # as an allowlist. Otherwise include every globally enabled MCP server.
     mcp_servers = config.get("mcp_servers", {})
     enabled_mcp_servers = {
-        str(name)
+        name
         for name, server_cfg in mcp_servers.items()
         if isinstance(server_cfg, dict)
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
@@ -693,8 +680,6 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
                     return
 
         curses.wrapper(_curses_menu)
-        from hermes_cli.curses_ui import flush_stdin
-        flush_stdin()
         return result_holder[0]
 
     except Exception:

@@ -35,8 +35,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+            # Vision + media generation
+            "vision_analyze", "image_generate", "video_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -80,14 +80,14 @@ TOOLSETS = {
     },
     
     "vision": {
-        "description": "Image analysis and vision tools",
+        "description": "Image + video analysis tools",
         "tools": ["vision_analyze"],
         "includes": []
     },
     
     "image_gen": {
-        "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
+        "description": "Creative generation tools (images + video)",
+        "tools": ["image_generate", "video_generate"],
         "includes": []
     },
     
@@ -251,8 +251,8 @@ TOOLSETS = {
             "terminal", "process",
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
-            # Vision + image generation
-            "vision_analyze", "image_generate",
+            # Vision + media generation
+            "vision_analyze", "image_generate", "video_generate",
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation
@@ -353,12 +353,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    "hermes-weixin": {
-        "description": "Weixin bot toolset - personal WeChat messaging via iLink (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
     "hermes-wecom": {
         "description": "WeCom bot toolset - enterprise WeChat messaging (full access)",
         "tools": _HERMES_CORE_TOOLS,
@@ -380,7 +374,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-weixin", "hermes-webhook"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-webhook"]
     }
 }
 
