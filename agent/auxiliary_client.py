@@ -139,12 +139,9 @@ _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 
-# Codex fallback: uses the Responses API (the only endpoint the Codex
-# OAuth token can access) with a fast model for auxiliary tasks.
-# ChatGPT-backed Codex accounts currently reject gpt-5.3-codex for these
-# auxiliary flows, while gpt-5.2-codex remains broadly available and supports
-# vision via Responses.
-_CODEX_AUX_MODEL = "gpt-5.2-codex"
+# Codex fallback: use the same default family as primary Codex runs so
+# auxiliary calls stay aligned with current account/provider settings.
+_CODEX_AUX_MODEL = "gpt-5.4-mini"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
