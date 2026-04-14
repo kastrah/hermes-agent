@@ -7755,6 +7755,32 @@ class GatewayRunner:
                 except Exception:
                     pass
 
+            stopping_result = await self.hooks.emit("session:stopping", {
+                "session_key": session_key,
+                "session_id": effective_session_id,
+                "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
+            })
+
+            if stopping_result and stopping_result.get("stop") is False:
+                steering_message = stopping_result.get("message")
+                if steering_message:
+                    logger.debug("session:stopping hook injecting message to continue: '%s...'",
+                                steering_message[:50])
+                    messages_to_continue = result_holder[0].get("messages", []) if result_holder[0] else []
+                    messages_to_continue.append({
+                        "role": "user",
+                        "content": steering_message,
+                    })
+                    return await self._run_agent(
+                        message=steering_message,
+                        context_prompt=context_prompt,
+                        history=messages_to_continue,
+                        source=source,
+                        session_id=effective_session_id,
+                        session_key=session_key,
+                        _interrupt_depth=_interrupt_depth + 1,
+                    )
+
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),

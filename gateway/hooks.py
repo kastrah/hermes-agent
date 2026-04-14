@@ -11,6 +11,7 @@ Events:
   - session:start       -- New session created (first message of a new session)
   - session:end         -- Session ends (user ran /new or /reset)
   - session:reset       -- Session reset completed (new session entry created)
+  - session:stopping   -- Fired before agent loop breaks; plugins can inject message to continue
   - agent:start         -- Agent begins processing a message
   - agent:step          -- Each turn in the tool-calling loop
   - agent:end           -- Agent finishes processing
@@ -135,7 +136,7 @@ class HookRegistry:
             except Exception as e:
                 print(f"[hooks] Error loading hook {hook_dir.name}: {e}", flush=True)
 
-    async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> None:
+    async def emit(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
         Fire all handlers registered for an event.
 
@@ -147,6 +148,11 @@ class HookRegistry:
         Args:
             event_type: The event identifier (e.g. "agent:start").
             context:    Optional dict with event-specific data.
+        
+        Returns:
+            Optional[Dict[str, Any]]: Combined result from handlers (last non-None result),
+            or None if no handlers produced results. Handlers can return dicts with
+            control data (e.g., {"stop": False, "message": "..."} to continue loops).
         """
         if context is None:
             context = {}
@@ -160,11 +166,17 @@ class HookRegistry:
             wildcard_key = f"{base}:*"
             handlers.extend(self._handlers.get(wildcard_key, []))
 
+        combined_result = None
         for fn in handlers:
             try:
                 result = fn(event_type, context)
                 # Support both sync and async handlers
                 if asyncio.iscoroutine(result):
-                    await result
+                    result = await result
+                # Collect non-None results (last one wins for combining)
+                if result is not None:
+                    combined_result = result
             except Exception as e:
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
+        
+        return combined_result
