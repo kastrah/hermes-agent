@@ -24,9 +24,15 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
+
+
+def generate_loop_id() -> str:
+    """Generate unique loop ID with timestamp for race condition prevention."""
+    return f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -568,6 +574,10 @@ class GatewayRunner:
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
 
+        # Track loop IDs per session for race condition prevention
+        # Key: session_key, Value: loop_id string
+        self._session_loop_ids: Dict[str, str] = {}
+
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
         # system prompt (including memory) every turn — breaking prefix cache
@@ -824,6 +834,25 @@ class GatewayRunner:
     @property
     def exit_code(self) -> Optional[int]:
         return self._exit_code
+
+    @property
+    def queued_messages(self) -> Dict[str, Any]:
+        """Return current queued messages for all sessions."""
+        result = {}
+        for session_key, info in self._pending_messages.items():
+            if hasattr(info, "text"):
+                result[session_key] = {
+                    "message": getattr(info, "text", ""),
+                    "loop_id": getattr(info, "loop_id", None),
+                    "timestamp": getattr(info, "timestamp", None),
+                }
+            else:
+                result[session_key] = {
+                    "message": info if isinstance(info, str) else "",
+                    "loop_id": None,
+                    "timestamp": None,
+                }
+        return result
 
     def _session_key_for_source(self, source: SessionSource) -> str:
         """Resolve the current session key for a source, honoring gateway config when available."""
@@ -1261,6 +1290,16 @@ class GatewayRunner:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return
+        current_loop_id = self._session_loop_ids.get(session_key)
+        loop_id = generate_loop_id()
+
+        existing = adapter._pending_messages.get(session_key)
+        if existing:
+            existing_loop_id = getattr(existing, "loop_id", None)
+            if existing_loop_id != current_loop_id:
+                adapter._pending_messages[session_key] = event
+                return
+
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
@@ -2466,6 +2505,8 @@ class GatewayRunner:
                 self._pending_messages[_quick_key] += "\n" + event.text
             else:
                 self._pending_messages[_quick_key] = event.text
+            # Persist for survival across restarts
+            self._session_store.save_pending_messages(_quick_key, self._pending_messages[_quick_key])
             return None
 
         # Check for commands
@@ -7012,6 +7053,7 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        loop_id: str = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -7025,6 +7067,16 @@ class GatewayRunner:
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        if loop_id is None:
+            loop_id = generate_loop_id()
+
+        self._session_loop_ids[session_key] = loop_id
+
+        # Load any persisted pending messages
+        saved_pending = self._session_store.load_pending_messages(session_key)
+        if saved_pending and session_key not in self._pending_messages:
+            self._pending_messages[session_key] = saved_pending
+
         from run_agent import AIAgent
         import queue
         
@@ -7755,45 +7807,9 @@ class GatewayRunner:
                 except Exception:
                     pass
 
-            stopping_result = await self.hooks.emit("session:stopping", {
-                "session_key": session_key,
-                "session_id": effective_session_id,
-                "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
-            })
+            # session:stopping hook moved - will be called after run_sync completes
 
-            if stopping_result and stopping_result.get("stop") is False:
-                steering_message = stopping_result.get("message")
-                if steering_message:
-                    logger.debug("session:stopping hook injecting message to continue: '%s...'",
-                                steering_message[:50])
-                    messages_to_continue = result_holder[0].get("messages", []) if result_holder[0] else []
-                    messages_to_continue.append({
-                        "role": "user",
-                        "content": steering_message,
-                    })
-                    return await self._run_agent(
-                        message=steering_message,
-                        context_prompt=context_prompt,
-                        history=messages_to_continue,
-                        source=source,
-                        session_id=effective_session_id,
-                        session_key=session_key,
-                        _interrupt_depth=_interrupt_depth + 1,
-                    )
-
-            return {
-                "final_response": final_response,
-                "last_reasoning": result.get("last_reasoning"),
-                "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
-                "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
-                "tools": tools_holder[0] or [],
-                "history_offset": _effective_history_offset,
-                "last_prompt_tokens": _last_prompt_toks,
-                "input_tokens": _input_toks,
-                "output_tokens": _output_toks,
-                "model": _resolved_model,
-                "session_id": effective_session_id,
-            }
+            # Check if we were interrupted OR have a queued message (/queue).
         
         # Start progress message sender if enabled
         progress_task = None
@@ -8136,7 +8152,43 @@ class GatewayRunner:
                     session_key=session_key,
                     _interrupt_depth=_interrupt_depth + 1,
                 )
+
+            # session:stopping hook - check if a plugin wants to inject a continuation message
+            # This runs AFTER the agent completes (in the async section), allowing plugins
+            # to keep the agent running instead of returning the response.
+            try:
+                effective_session_id = session_id
+                if agent_holder[0] and hasattr(agent_holder[0], 'session_id'):
+                    effective_session_id = agent_holder[0].session_id
+                
+                stopping_result = await self.hooks.emit("session:stopping", {
+                    "session_key": session_key,
+                    "session_id": effective_session_id,
+                    "messages": result.get("messages", []) if result else [],
+                    "queued_messages": self.queued_messages,
+                })
+
+                if stopping_result and stopping_result.get("stop") is False:
+                    steering_message = stopping_result.get("message")
+                    if steering_message:
+                        logger.debug("session:stopping hook injecting message to continue: '%s...'",
+                                    steering_message[:50])
+                        return await self._run_agent(
+                            message=steering_message,
+                            context_prompt=context_prompt,
+                            history=result.get("messages", []) if result else [],
+                            source=source,
+                            session_id=effective_session_id,
+                            session_key=session_key,
+                            _interrupt_depth=_interrupt_depth + 1,
+                        )
+            except Exception as e:
+                logger.debug("session:stopping hook error: %s", e)
+
+            return result_holder[0] if result_holder[0] else {"final_response": response}
+        
         finally:
+
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()

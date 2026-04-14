@@ -569,6 +569,36 @@ class SessionStore:
         with self._lock:
             return self._pop_handover_note_locked(session_key)
 
+    def save_pending_messages(self, session_key: str, pending: dict) -> None:
+        """Save pending messages to session for persistence across restarts."""
+        self._pending_messages = getattr(self, "_pending_messages", {})
+        self._pending_messages[session_key] = pending
+        self._save_pending_messages_to_db(session_key, pending)
+
+    def load_pending_messages(self, session_key: str) -> dict:
+        """Load pending messages from session."""
+        return self._load_pending_messages_from_db(session_key)
+
+    def _save_pending_messages_to_db(self, session_key: str, pending: dict) -> None:
+        """Persist pending messages to SQLite."""
+        if not self._db:
+            return
+        try:
+            self._db.set_session_metadata(session_key, {"pending_messages": pending})
+        except Exception as e:
+            logger.warning("Failed to save pending messages for %s: %s", session_key[:20], e)
+
+    def _load_pending_messages_from_db(self, session_key: str) -> dict:
+        """Load pending messages from SQLite."""
+        if not self._db:
+            return {}
+        try:
+            metadata = self._db.get_session_metadata(session_key) or {}
+            return metadata.get("pending_messages", {})
+        except Exception as e:
+            logger.warning("Failed to load pending messages for %s: %s", session_key[:20], e)
+            return {}
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
