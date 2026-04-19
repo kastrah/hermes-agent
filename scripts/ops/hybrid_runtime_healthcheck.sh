@@ -26,9 +26,17 @@ fi
 
 state_json="$(ssh -o ConnectTimeout=8 "${HERMES_SSH_USER}@${HERMES_HOST}" 'cat /root/.hermes/gateway_state.json 2>/dev/null || true')"
 if [[ -n "${state_json}" ]]; then
-  echo "${state_json}" | python3 - <<'PY'
-import json, sys
-s=json.load(sys.stdin)
+  STATE_JSON="${state_json}" python3 - <<'PY'
+import json
+import os
+
+raw = os.environ.get("STATE_JSON", "")
+try:
+    s = json.loads(raw)
+except Exception as exc:
+    print(f"[WARN] gateway_state.json is not valid JSON: {exc}")
+    raise SystemExit(0)
+
 if s.get('gateway_state')!='running':
     print('[WARN] gateway_state is not running')
 else:
