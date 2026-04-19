@@ -30,19 +30,26 @@ Legend: `[ ]` todo, `[-]` in progress, `[x]` done
 - [x] Modal worker app stopped.
 
 ### Phase B: Memory/Cost control
-- [ ] Inventory always-on services on Hetzner (`docker`, `ollama`, sidecars) and classify keep/stop.
-- [ ] Stop non-essential resident services and record RAM deltas.
+- [x] Inventory always-on services on Hetzner (`docker`, `ollama`, sidecars) and classify keep/stop.
+- [x] Stop non-essential resident services and record RAM deltas.
 - [ ] Set max acceptable RAM target and swap guardrail.
 
 ### Phase C: Durability and backup
 - [ ] Confirm nightly R2 backup job succeeds and logs success marker.
-- [ ] Write backup object metadata to Supabase `public.backup_archive`.
+- [x] Write backup object metadata to Supabase `public.backup_archive`.
 - [ ] Run one restore drill and timestamp result in runbook.
 
 ### Phase D: Reliability guardrails
-- [ ] Add one-command health check loop (`scripts/ops/hybrid_runtime_healthcheck.sh`).
+- [x] Add one-command health check loop (`scripts/ops/hybrid_runtime_healthcheck.sh`).
 - [ ] Configure alert policy for failed backup / gateway disconnected / queue backlog.
 - [ ] Add weekly ops review cadence.
+
+## Current State (2026-04-19)
+- `automem` retired on Hetzner (containers/volumes removed after backup snapshot).
+- `openviking` remains active provider and receives memory commits.
+- Cloudflare ingress + queue consumer path is live and writing to `public.event_log` (smoke-tested).
+- Supabase runtime tables reachable (`event_log`, `backup_archive`, `session_state`).
+- R2 nightly job is configured but blocked on missing `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` in `/root/.hermes/scripts/r2_backup.env`.
 
 ## Daily Loop
 Run:
