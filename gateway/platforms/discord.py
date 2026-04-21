@@ -672,6 +672,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif allow_bots == "mentions":
                         if not self._client.user or self._client.user not in message.mentions:
                             return
+                        # Collaboration guard: allow one-step bot handoff only
+                        # when the bot mention is replying to a human message.
+                        ref = getattr(message, "reference", None)
+                        resolved = getattr(ref, "resolved", None)
+                        ref_author = getattr(resolved, "author", None)
+                        if resolved is None or getattr(ref_author, "bot", False):
+                            return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
@@ -693,12 +700,18 @@ class DiscordAdapter(BasePlatformAdapter):
                         self._client.user is not None
                         and self._client.user in message.mentions
                     )
+                    _bot_mentions = [m for m in message.mentions if getattr(m, "bot", False)]
                     _other_bots_mentioned = any(
                         m.bot and m != self._client.user
                         for m in message.mentions
                     )
                     # If other bots are mentioned but we're not → not for us
                     if _other_bots_mentioned and not _self_mentioned:
+                        return
+                    # Hierarchy mode for shared channels:
+                    # primary can answer multi-bot mentions; secondary waits.
+                    role = os.getenv("DISCORD_MULTI_BOT_ROLE", "primary").lower().strip()
+                    if _self_mentioned and len(_bot_mentions) > 1 and role == "secondary":
                         return
                     # If humans are mentioned but we're not → not for us
                     # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
