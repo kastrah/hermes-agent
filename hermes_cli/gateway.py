@@ -1215,7 +1215,7 @@ Description={SERVICE_DESCRIPTION}
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=600
-StartLimitBurst=5
+StartLimitBurst=20
 
 [Service]
 Type=simple
@@ -1230,7 +1230,7 @@ Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
-RestartSec=30
+RestartSec=15
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
@@ -1252,7 +1252,7 @@ WantedBy=multi-user.target
 Description={SERVICE_DESCRIPTION}
 After=network.target
 StartLimitIntervalSec=600
-StartLimitBurst=5
+StartLimitBurst=20
 
 [Service]
 Type=simple
@@ -1262,7 +1262,7 @@ Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
-RestartSec=30
+RestartSec=15
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
@@ -1516,7 +1516,7 @@ def systemd_restart(system: bool = False):
 
         # Phase 1: wait for old process to exit (drain + shutdown)
         print(f"⏳ {scope_label} service draining active work...")
-        deadline = time.time() + 90
+        deadline = time.time() + 30
         while time.time() < deadline:
             try:
                 os.kill(pid, 0)
@@ -1528,7 +1528,7 @@ def systemd_restart(system: bool = False):
 
         # Phase 2: wait for systemd to start the new process
         print(f"⏳ Waiting for {svc} to restart...")
-        deadline = time.time() + 60
+        deadline = time.time() + 30
         while time.time() < deadline:
             try:
                 result = subprocess.run(

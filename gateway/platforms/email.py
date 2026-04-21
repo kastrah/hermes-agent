@@ -231,6 +231,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
         self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
         self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        self._read_only = os.getenv("EMAIL_READ_ONLY", "").lower() in ("true", "1", "yes")
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -470,6 +471,8 @@ class EmailAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an email reply to the given address."""
+        if self._read_only:
+            return SendResult(success=False, error="Email read-only mode enabled; outbound email is blocked")
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
@@ -547,6 +550,8 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
     ) -> SendResult:
         """Send a file as an email attachment."""
+        if self._read_only:
+            return SendResult(success=False, error="Email read-only mode enabled; outbound email attachments are blocked")
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(

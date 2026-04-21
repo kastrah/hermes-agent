@@ -1059,6 +1059,9 @@ async def _send_email(extra, chat_id, message):
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
+    if os.getenv("EMAIL_READ_ONLY", "").lower() in ("true", "1", "yes"):
+        return {"error": "Email read-only mode enabled; outbound email is blocked"}
+
     try:
         msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address

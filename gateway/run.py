@@ -11010,6 +11010,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
+    # Service-managed restart requests must exit immediately once shutdown is
+    # complete so systemd/launchd can relaunch us. Post-shutdown cleanup (for
+    # example MCP teardown) can block indefinitely and prevent auto-restart if
+    # we delay exit until after those hooks.
     if runner.should_exit_with_failure:
         if runner.exit_reason:
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
