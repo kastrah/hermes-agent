@@ -7799,6 +7799,7 @@ class AIAgent:
                         api_kwargs=api_kwargs,
                     )
                     result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
+                    self._capture_rate_limits(getattr(result["response"], "response", None) or getattr(result["response"], "_response", None))
             except Exception as e:
                 result["error"] = e
             finally:
@@ -12877,11 +12878,53 @@ class AIAgent:
             api_kwargs = None  # Guard against UnboundLocalError in except handler
 
             while retry_count < max_retries:
-                # ── Nous Portal rate limit guard ──────────────────────
-                # If another session already recorded that Nous is rate-
-                # limited, skip the API call entirely.  Each attempt
-                # (including SDK-level retries) counts against RPH and
-                # deepens the rate limit hole.
+                # ── Cross-session provider rate limit guard ────────────
+                # If another session already recorded that this provider/model
+                # is rate-limited, skip the API call entirely. Each attempted
+                # request can deepen the rate-limit hole, especially with SDK
+                # retries and multiple gateway/CLI sessions running together.
+                try:
+                    from agent.rate_limit_guard import (
+                        rate_limit_remaining,
+                        format_remaining as _fmt_rate_remaining,
+                    )
+                    _rate_remaining = rate_limit_remaining(self.provider, self.model)
+                    if _rate_remaining is not None and _rate_remaining > 0:
+                        _rate_msg = (
+                            f"{self.provider}/{self.model} rate limit active — "
+                            f"resets in {_fmt_rate_remaining(_rate_remaining)}."
+                        )
+                        self._vprint(
+                            f"{self.log_prefix}⏳ {_rate_msg} Trying fallback...",
+                            force=True,
+                        )
+                        self._emit_status(f"⏳ {_rate_msg}")
+                        if self._try_activate_fallback(reason=FailoverReason.rate_limit):
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
+                        self._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": (
+                                f"⏳ {_rate_msg}\n\n"
+                                "No fallback provider available. "
+                                "Try again after the reset, or add a "
+                                "fallback provider in config.yaml."
+                            ),
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": _rate_msg,
+                        }
+                except ImportError:
+                    pass
+                except Exception:
+                    pass  # Never let rate guard break the agent loop
+
+                # Keep Nous-specific guard for its genuine-vs-upstream-capacity
+                # semantics and backward-compatible existing state files.
                 if self.provider == "nous":
                     try:
                         from agent.nous_rate_guard import (
@@ -12899,7 +12942,7 @@ class AIAgent:
                                 force=True,
                             )
                             self._emit_status(f"⏳ {_nous_msg}")
-                            if self._try_activate_fallback():
+                            if self._try_activate_fallback(reason=FailoverReason.rate_limit):
                                 retry_count = 0
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
@@ -13901,6 +13944,20 @@ class AIAgent:
                         classified.should_rotate_credential, classified.should_fallback,
                     )
 
+                    if classified.reason == FailoverReason.rate_limit:
+                        try:
+                            from agent.rate_limit_guard import record_rate_limit
+                            _err_resp = getattr(api_error, "response", None)
+                            _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
+                            record_rate_limit(
+                                self.provider,
+                                self.model,
+                                headers=_err_hdrs,
+                                error_context=error_context,
+                            )
+                        except Exception:
+                            pass
+
                     recovered_with_pool, has_retried_429 = self._recover_with_credential_pool(
                         status_code=status_code,
                         has_retried_429=has_retried_429,
@@ -14352,6 +14409,16 @@ class AIAgent:
                                     headers=_err_hdrs,
                                     error_context=error_context,
                                 )
+                                try:
+                                    from agent.rate_limit_guard import record_rate_limit
+                                    record_rate_limit(
+                                        self.provider,
+                                        self.model,
+                                        headers=_err_hdrs,
+                                        error_context=error_context,
+                                    )
+                                except Exception:
+                                    pass
                             else:
                                 logging.info(
                                     "Nous 429 looks like upstream capacity "

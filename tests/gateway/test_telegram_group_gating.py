@@ -52,15 +52,21 @@ def _group_message(
     *,
     chat_id=-100,
     from_user_id=111,
+    from_user_is_bot=False,
     thread_id=None,
     reply_to_bot=False,
+    reply_to_bot_id=None,
+    reply_to_is_bot=True,
     entities=None,
     caption=None,
     caption_entities=None,
 ):
     reply_to_message = None
     if reply_to_bot:
-        reply_to_message = SimpleNamespace(from_user=SimpleNamespace(id=999))
+        reply_user_id = 999 if reply_to_bot_id is None else reply_to_bot_id
+        reply_to_message = SimpleNamespace(
+            from_user=SimpleNamespace(id=reply_user_id, is_bot=reply_to_is_bot)
+        )
     return SimpleNamespace(
         text=text,
         caption=caption,
@@ -68,12 +74,12 @@ def _group_message(
         caption_entities=caption_entities or [],
         message_thread_id=thread_id,
         chat=SimpleNamespace(id=chat_id, type="group"),
-        from_user=SimpleNamespace(id=from_user_id),
+        from_user=SimpleNamespace(id=from_user_id, is_bot=from_user_is_bot),
         reply_to_message=reply_to_message,
     )
 
 
-def _dm_message(text="hello", *, from_user_id=111):
+def _dm_message(text="hello", *, from_user_id=111, from_user_is_bot=False):
     return SimpleNamespace(
         text=text,
         caption=None,
@@ -81,7 +87,7 @@ def _dm_message(text="hello", *, from_user_id=111):
         caption_entities=[],
         message_thread_id=None,
         chat=SimpleNamespace(id=from_user_id, type="private"),
-        from_user=SimpleNamespace(id=from_user_id),
+        from_user=SimpleNamespace(id=from_user_id, is_bot=from_user_is_bot),
         reply_to_message=None,
     )
 
@@ -144,9 +150,123 @@ def test_group_messages_can_require_direct_trigger_via_config():
         _group_message("/status", entities=[_bot_command_entity("/status", "/status")]),
         is_command=True,
     ) is False
+
+
+def test_replying_to_another_bot_stays_quiet_even_if_text_looks_wakeful():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"\brecall\b"])
+    # Simulate a Telegram reply to Froggy. Even if the text contains a wake
+    # word that could otherwise trigger a looser path, Zuri should not answer.
+    assert (
+        adapter._should_process_message(
+            _group_message(
+                "recall the plan",
+                reply_to_bot=True,
+                reply_to_bot_id=12345,
+                reply_to_is_bot=True,
+            )
+        )
+        is False
+    )
     # And commands still pass unconditionally when require_mention is disabled
     adapter_no_mention = _make_adapter(require_mention=False)
     assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True
+
+
+def test_messages_authored_by_other_bots_do_not_wake_this_bot():
+    adapter = _make_adapter(require_mention=True)
+    assert adapter._should_process_message(_group_message("hello", from_user_id=12345, from_user_is_bot=True)) is False
+
+
+def test_messages_authored_by_other_bots_do_not_wake_this_bot_even_with_self_mention():
+    adapter = _make_adapter(require_mention=True)
+    text = "hey @hermes_bot take a look"
+    mention = _mention_entity(text, "@hermes_bot")
+    assert (
+        adapter._should_process_message(
+            _group_message(
+                text,
+                from_user_id=12345,
+                from_user_is_bot=True,
+                entities=[mention],
+            )
+        )
+        is False
+    )
+
+
+def test_messages_authored_by_other_bots_do_not_wake_this_bot_by_reply():
+    adapter = _make_adapter(require_mention=True)
+    assert (
+        adapter._should_process_message(
+            _group_message(
+                "tool status",
+                from_user_id=12345,
+                from_user_is_bot=True,
+                reply_to_bot=True,
+            )
+        )
+        is False
+    )
+
+
+def test_messages_authored_by_this_bot_are_ignored():
+    adapter = _make_adapter(require_mention=True)
+    assert adapter._should_process_message(_group_message("hello", from_user_id=999, from_user_is_bot=True)) is False
+
+
+def test_command_targeting_other_bot_is_rejected_early():
+    adapter = _make_adapter(require_mention=False)
+    assert adapter._command_targets_this_bot(_group_message("/new@other_bot")) is False
+    assert adapter._command_targets_this_bot(_group_message("/new@hermes_bot")) is True
+    assert adapter._command_targets_this_bot(_group_message("/new")) is True
+
+
+def test_other_bot_mention_does_not_wake_this_bot_even_if_pattern_matches():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"\brecall\b"])
+    text = "@froggyeyedbot recall the draft"
+    other_mention = SimpleNamespace(type="mention", offset=0, length=len("@froggyeyedbot"))
+
+    # Explicitly mentioning another bot must not trigger this bot.
+    assert adapter._should_process_message(_group_message(text, entities=[other_mention])) is False
+
+
+def test_other_bot_mention_overrides_reply_to_this_bot():
+    adapter = _make_adapter(require_mention=True)
+    text = "@FroggyeyedBot wassup with Zuri?"
+    other_mention = SimpleNamespace(type="mention", offset=0, length=len("@FroggyeyedBot"))
+
+    assert (
+        adapter._should_process_message(
+            _group_message(text, entities=[other_mention], reply_to_bot=True)
+        )
+        is False
+    )
+
+
+def test_self_mention_overrides_reply_to_other_bot():
+    adapter = _make_adapter(require_mention=True)
+    text = "@hermes_bot wassup with Zuri?"
+    self_mention = _mention_entity(text, "@hermes_bot")
+
+    assert (
+        adapter._should_process_message(
+            _group_message(
+                text,
+                entities=[self_mention],
+                reply_to_bot=True,
+                reply_to_bot_id=12345,
+                reply_to_is_bot=True,
+            )
+        )
+        is True
+    )
+
+
+def test_plain_text_other_handle_token_does_not_wake_this_bot_even_if_pattern_matches():
+    adapter = _make_adapter(require_mention=True, mention_patterns=[r"\brecall\b"])
+    # Simulates a plain-text @handle that Telegram did not parse as a mention entity.
+    text = "@FroggyeyedBot recall the draft"
+    assert adapter._should_process_message(_group_message(text, entities=[])) is False
 
 
 def test_free_response_chats_bypass_mention_requirement():

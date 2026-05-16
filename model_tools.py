@@ -21,7 +21,6 @@ Public API (signatures preserved from the original 2,400-line version):
 """
 
 import json
-import re
 import asyncio
 import logging
 import threading
@@ -29,7 +28,8 @@ import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
-from toolsets import resolve_toolset, validate_toolset
+from tools.tool_schema import assemble_tool_definitions
+from tools.tool_runtime import run_async as _run_async  # forward-compat: migrate existing callers
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,9 @@ def _run_async(coro):
     asyncio.run()'s create-and-destroy lifecycle.
 
     This is the single source of truth for sync->async bridging in tool
-    handlers. Each handler is self-protecting via this function.
+    handlers. The RL paths (agent_loop.py, tool_context.py) also provide
+    outer thread-pool wrapping as defense-in-depth, but each handler is
+    self-protecting via this function.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -230,6 +232,13 @@ _LEGACY_TOOLSET_MAP = {
         "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
+    "rl_tools": [
+        "rl_list_environments", "rl_select_environment",
+        "rl_get_current_config", "rl_edit_config",
+        "rl_start_training", "rl_check_status",
+        "rl_stop_training", "rl_get_results",
+        "rl_list_runs", "rl_test_inference"
+    ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
 }
@@ -330,148 +339,16 @@ def _compute_tool_definitions(
     quiet_mode: bool = False,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
-    # Determine which tool names the caller wants
-    tools_to_include: set = set()
-
-    if enabled_toolsets is not None:
-        for toolset_name in enabled_toolsets:
-            if validate_toolset(toolset_name):
-                resolved = resolve_toolset(toolset_name)
-                tools_to_include.update(resolved)
-                if not quiet_mode:
-                    print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
-            elif toolset_name in _LEGACY_TOOLSET_MAP:
-                legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
-                tools_to_include.update(legacy_tools)
-                if not quiet_mode:
-                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
-    else:
-        # Default: start with everything
-        from toolsets import get_all_toolsets
-        for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
-
-    # Always apply disabled toolsets as a subtraction step at the end.
-    # This ensures that even if a composite toolset (like hermes-cli)
-    # is enabled, any tools belonging to a disabled toolset are strictly
-    # stripped out. See issue #17309.
-    if disabled_toolsets:
-        for toolset_name in disabled_toolsets:
-            if validate_toolset(toolset_name):
-                resolved = resolve_toolset(toolset_name)
-                tools_to_include.difference_update(resolved)
-                if not quiet_mode:
-                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
-            elif toolset_name in _LEGACY_TOOLSET_MAP:
-                legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
-                tools_to_include.difference_update(legacy_tools)
-                if not quiet_mode:
-                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif not quiet_mode:
-                print(f"⚠️  Unknown toolset: {toolset_name}")
-
-    # Plugin-registered tools are now resolved through the normal toolset
-    # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
-    # all check the tool registry for plugin-provided toolsets.  No bypass
-    # needed; plugins respect enabled_toolsets / disabled_toolsets like any
-    # other toolset.
-
-    # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
-
-    # The set of tool names that actually passed check_fn filtering.
-    # Use this (not tools_to_include) for any downstream schema that references
-    # other tools by name — otherwise the model sees tools mentioned in
-    # descriptions that don't actually exist, and hallucinates calls to them.
-    available_tool_names = {t["function"]["name"] for t in filtered_tools}
-
-    # Rebuild execute_code schema to only list sandbox tools that are actually
-    # available.  Without this, the model sees "web_search is available in
-    # execute_code" even when the API key isn't configured or the toolset is
-    # disabled (#560-discord).
-    if "execute_code" in available_tool_names:
-        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
-        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
-        dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
-        for i, td in enumerate(filtered_tools):
-            if td.get("function", {}).get("name") == "execute_code":
-                filtered_tools[i] = {"type": "function", "function": dynamic_schema}
-                break
-
-    # Rebuild discord / discord_admin schemas based on the bot's privileged
-    # intents (detected from GET /applications/@me) and the user's action
-    # allowlist in config.  Hides actions the bot's intents don't support so
-    # the model never attempts them, and annotates fetch_messages when the
-    # MESSAGE_CONTENT intent is missing.
-    _discord_schema_fns = {
-        "discord": "get_dynamic_schema_core",
-        "discord_admin": "get_dynamic_schema_admin",
-    }
-    for discord_tool_name in _discord_schema_fns:
-        if discord_tool_name in available_tool_names:
-            try:
-                from tools import discord_tool as _dt
-                schema_fn = getattr(_dt, _discord_schema_fns[discord_tool_name])
-                dynamic = schema_fn()
-            except Exception:
-                dynamic = None
-            if dynamic is None:
-                filtered_tools = [
-                    t for t in filtered_tools
-                    if t.get("function", {}).get("name") != discord_tool_name
-                ]
-                available_tool_names.discard(discord_tool_name)
-            else:
-                for i, td in enumerate(filtered_tools):
-                    if td.get("function", {}).get("name") == discord_tool_name:
-                        filtered_tools[i] = {"type": "function", "function": dynamic}
-                        break
-
-    # Strip web tool cross-references from browser_navigate description when
-    # web_search / web_extract are not available.  The static schema says
-    # "prefer web_search or web_extract" which causes the model to hallucinate
-    # those tools when they're missing.
-    if "browser_navigate" in available_tool_names:
-        web_tools_available = {"web_search", "web_extract"} & available_tool_names
-        if not web_tools_available:
-            for i, td in enumerate(filtered_tools):
-                if td.get("function", {}).get("name") == "browser_navigate":
-                    desc = td["function"].get("description", "")
-                    desc = desc.replace(
-                        " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
-                        "",
-                    )
-                    filtered_tools[i] = {
-                        "type": "function",
-                        "function": {**td["function"], "description": desc},
-                    }
-                    break
-
-    if not quiet_mode:
-        if filtered_tools:
-            tool_names = [t["function"]["name"] for t in filtered_tools]
-            print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
-        else:
-            print("🛠️  No tools selected (all filtered out or unavailable)")
-
+    result = assemble_tool_definitions(
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
+        quiet_mode=quiet_mode,
+        registry=registry,
+    )
     global _last_resolved_tool_names
-    _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+    _last_resolved_tool_names = result.resolved_tool_names
+    return result.definitions
 
-    # Sanitize schemas for broad backend compatibility. llama.cpp's
-    # json-schema-to-grammar converter (used by its OAI server to build
-    # GBNF tool-call parsers) rejects some shapes that cloud providers
-    # silently accept — bare "type": "object" with no properties,
-    # string-valued schema nodes from malformed MCP servers, etc. This
-    # is a no-op for schemas that are already well-formed.
-    try:
-        from tools.schema_sanitizer import sanitize_tool_schemas
-        filtered_tools = sanitize_tool_schemas(filtered_tools)
-    except Exception as e:  # pragma: no cover — defensive
-        logger.warning("Schema sanitization skipped: %s", e)
-
-    return filtered_tools
 
 
 # =============================================================================
@@ -484,48 +361,6 @@ def _compute_tool_definitions(
 # so if something slips through, the LLM sees a sensible message.
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
-
-
-# =========================================================================
-# Tool error sanitization
-# =========================================================================
-#
-# Tool exceptions can carry arbitrary text into the model's context as the
-# `tool` message content. json.dumps() handles quote/backslash escaping so a
-# raw injection of `</tool_call>` won't break message framing, but the model
-# still *reads* those tokens and they can confuse downstream tool-call
-# parsing or, in adversarial cases, nudge it toward role-confusion framing.
-#
-# This helper strips structural framing tokens (XML role tags, CDATA,
-# markdown code fences) and caps the message at a sane upper bound before it
-# becomes part of the conversation. It's defense-in-depth — the json layer
-# already prevents framing escape — but cheap and worth having.
-#
-# Ported from ironclaw#1639.
-_TOOL_ERROR_ROLE_TAG_RE = re.compile(
-    r'</?(?:tool_call|function_call|result|response|output|input|system|assistant|user)>',
-    re.IGNORECASE,
-)
-_TOOL_ERROR_FENCE_OPEN_RE = re.compile(r'^\s*```(?:json|xml|html|markdown)?\s*', re.MULTILINE)
-_TOOL_ERROR_FENCE_CLOSE_RE = re.compile(r'\s*```\s*$', re.MULTILINE)
-_TOOL_ERROR_CDATA_RE = re.compile(r'<!\[CDATA\[.*?\]\]>', re.DOTALL)
-_TOOL_ERROR_MAX_LEN = 2000
-
-
-def _sanitize_tool_error(error_msg: str) -> str:
-    """Strip structural framing tokens from a tool error before showing it to the model.
-
-    See _TOOL_ERROR_ROLE_TAG_RE docstring above for rationale.
-    """
-    if not error_msg:
-        return "[TOOL_ERROR] "
-    sanitized = _TOOL_ERROR_ROLE_TAG_RE.sub("", error_msg)
-    sanitized = _TOOL_ERROR_FENCE_OPEN_RE.sub("", sanitized)
-    sanitized = _TOOL_ERROR_FENCE_CLOSE_RE.sub("", sanitized)
-    sanitized = _TOOL_ERROR_CDATA_RE.sub("", sanitized)
-    if len(sanitized) > _TOOL_ERROR_MAX_LEN:
-        sanitized = sanitized[:_TOOL_ERROR_MAX_LEN - 3] + "..."
-    return f"[TOOL_ERROR] {sanitized}"
 
 
 # =========================================================================
@@ -632,7 +467,7 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
                 return result
         return value
 
-    if expected_type in {"integer", "number"}:
+    if expected_type in ("integer", "number"):
         return _coerce_number(value, integer_only=(expected_type == "integer"))
     if expected_type == "boolean":
         return _coerce_boolean(value)
@@ -867,7 +702,7 @@ def handle_function_call(
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.exception(error_msg)
-        return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
 # =============================================================================

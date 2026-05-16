@@ -427,8 +427,8 @@ async def test_discord_auto_thread_can_be_disabled(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_discord_bot_thread_skips_mention_requirement(adapter, monkeypatch):
-    """Messages in a thread the bot has participated in should not require @mention."""
+async def test_discord_bot_thread_still_requires_mention(adapter, monkeypatch):
+    """Thread participation alone should not bypass @mention gating."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
@@ -441,10 +441,7 @@ async def test_discord_bot_thread_skips_mention_requirement(adapter, monkeypatch
 
     await adapter._handle_message(message)
 
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
-    assert event.text == "follow-up without mention"
-    assert event.source.chat_type == "thread"
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
