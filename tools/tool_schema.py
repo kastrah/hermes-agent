@@ -6,9 +6,65 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from tools.tool_policy import resolve_tool_names
-
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Tool-name resolution — extracted from model_tools._compute_tool_definitions
+# so the schema assembly module is self-contained.
+# ---------------------------------------------------------------------------
+
+_LEGACY_TOOLSET_MAP: dict[str, set[str]] = {}  # populated at registry init
+
+
+def resolve_tool_names(
+    enabled_toolsets: list[str] | None = None,
+    disabled_toolsets: list[str] | None = None,
+    quiet_mode: bool = False,
+    registry: Any = None,
+) -> set[str]:
+    """Resolve the set of tool names from toolset specifiers.
+
+    Mirrors the upstream logic in model_tools._compute_tool_definitions
+    (v0.14.0, lines 327–373).  Supports enabled/disjoint/legacy toolsets.
+    """
+    from toolsets import resolve_toolset, validate_toolset, get_all_toolsets
+
+    tools_to_include: set[str] = set()
+
+    if enabled_toolsets is not None:
+        for toolset_name in enabled_toolsets:
+            if validate_toolset(toolset_name):
+                resolved = resolve_toolset(toolset_name)
+                tools_to_include.update(resolved)
+                if not quiet_mode:
+                    print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+            elif toolset_name in _LEGACY_TOOLSET_MAP:
+                legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
+                tools_to_include.update(legacy_tools)
+                if not quiet_mode:
+                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+            elif not quiet_mode:
+                print(f"⚠️  Unknown toolset: {toolset_name}")
+    else:
+        for ts_name in get_all_toolsets():
+            tools_to_include.update(resolve_toolset(ts_name))
+
+    if disabled_toolsets:
+        for toolset_name in disabled_toolsets:
+            if validate_toolset(toolset_name):
+                resolved = resolve_toolset(toolset_name)
+                tools_to_include.difference_update(resolved)
+                if not quiet_mode:
+                    print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
+            elif toolset_name in _LEGACY_TOOLSET_MAP:
+                legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
+                tools_to_include.difference_update(legacy_tools)
+                if not quiet_mode:
+                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+            elif not quiet_mode:
+                print(f"⚠️  Unknown toolset: {toolset_name}")
+
+    return tools_to_include
 
 
 @dataclass(frozen=True)
