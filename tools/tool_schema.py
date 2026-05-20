@@ -81,7 +81,7 @@ def assemble_tool_definitions(
     registry,
 ) -> ToolSchemaResult:
     plan = resolve_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode, registry)
-    filtered_tools = registry.get_definitions(plan.tool_names, quiet=quiet_mode)
+    filtered_tools = registry.get_definitions(plan, quiet=quiet_mode)
     available_tool_names = {t["function"]["name"] for t in filtered_tools}
 
     filtered_tools = _apply_execute_code_schema(filtered_tools, available_tool_names)
