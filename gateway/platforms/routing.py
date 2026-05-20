@@ -55,8 +55,6 @@ def decide_message_routing(facts: RoutingFacts) -> RoutingDecision:
         return RoutingDecision.drop("authored_by_bot")
     if facts.free_response:
         return RoutingDecision.allow("free_response")
-    if not facts.require_mention:
-        return RoutingDecision.allow("mention_not_required")
     if facts.mentions_self:
         return RoutingDecision.allow("mentions_self")
     if facts.mentions_other:
@@ -67,6 +65,8 @@ def decide_message_routing(facts: RoutingFacts) -> RoutingDecision:
         return RoutingDecision.drop("replies_to_other_bot")
     if facts.replies_to_self:
         return RoutingDecision.allow("replies_to_self")
+    if not facts.require_mention:
+        return RoutingDecision.allow("mention_not_required")
     if facts.matches_wake_pattern:
         return RoutingDecision.allow("wake_pattern")
     return RoutingDecision.drop("mention_required")

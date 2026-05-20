@@ -32,9 +32,10 @@ def test_rate_limit_store_uses_error_context_reset_at(tmp_path, monkeypatch):
 
 
 def test_run_agent_wires_cross_session_rate_guard_into_provider_loop():
-    source = (Path(__file__).resolve().parents[2] / "run_agent.py").read_text()
+    loop_source = (Path(__file__).resolve().parents[2] / "agent/conversation_loop.py").read_text()
+    helpers_source = (Path(__file__).resolve().parents[2] / "agent/chat_completion_helpers.py").read_text()
 
-    assert "rate_limit_remaining(self.provider, self.model)" in source
-    assert "_try_activate_fallback(reason=FailoverReason.rate_limit)" in source
-    assert "record_rate_limit(" in source
-    assert "self._capture_rate_limits(" in source
+    assert "rate_limit_remaining(agent.provider, agent.model)" in loop_source
+    assert "agent._try_activate_fallback(reason=FailoverReason.rate_limit)" in loop_source
+    assert "record_rate_limit(" in loop_source
+    assert "agent._capture_rate_limits(" in helpers_source
