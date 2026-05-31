@@ -91,6 +91,7 @@ def _group_message(
     chat_id=-100,
     from_user_id=111,
     from_user_name="Alice Example",
+    from_user_is_bot=False,
     thread_id=None,
     reply_to_bot=False,
     entities=None,
@@ -109,7 +110,12 @@ def _group_message(
         message_thread_id=thread_id,
         is_topic_message=thread_id is not None,
         chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=thread_id is not None),
-        from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0]),
+        from_user=SimpleNamespace(
+            id=from_user_id,
+            full_name=from_user_name,
+            first_name=from_user_name.split()[0],
+            is_bot=from_user_is_bot,
+        ),
         reply_to_message=reply_to_message,
         date=None,
     )
@@ -493,6 +499,20 @@ def test_entityless_multi_bot_mentions_still_route_exclusively():
     assert default_bot._should_process_message(_group_message(text, reply_to_bot=True)) is False
     assert research_bot._should_process_message(_group_message(text)) is True
     assert ops_bot._should_process_message(_group_message(text)) is True
+
+
+def test_group_messages_from_other_bots_are_ignored_even_when_replies_would_trigger():
+    adapter = _make_adapter(require_mention=True, bot_username="zuri_bot")
+
+    assert adapter._should_process_message(
+        _group_message(
+            "Hey! What's up?",
+            from_user_id=222,
+            from_user_name="Froggy Bot",
+            from_user_is_bot=True,
+            reply_to_bot=True,
+        )
+    ) is False
 
 
 def test_intern_bots_ignore_messages_addressed_to_other_intern_bot():

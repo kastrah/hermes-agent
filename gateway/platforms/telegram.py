@@ -4657,6 +4657,14 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_user = getattr(message.reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
+    def _is_from_other_bot(self, message: Message) -> bool:
+        if not self._bot:
+            return False
+        sender = getattr(message, "from_user", None)
+        if not sender or not getattr(sender, "is_bot", False):
+            return False
+        return getattr(sender, "id", None) != getattr(self._bot, "id", None)
+
     @staticmethod
     def _extract_bot_mention_usernames(message: Message) -> set[str]:
         """Extract explicit Telegram bot usernames mentioned in text/captions.
@@ -4819,6 +4827,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_observe_unmentioned_group_message(self, message: Message) -> bool:
         """Return True when a group message should be stored but not dispatched."""
+        if self._is_from_other_bot(message):
+            return False
         if not self._telegram_observe_unmentioned_group_messages():
             return False
         if not self._is_group_chat(message):
@@ -4965,6 +4975,9 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
+        if self._is_from_other_bot(message):
+            return False
+
         if not self._is_group_chat(message):
             return True
 
