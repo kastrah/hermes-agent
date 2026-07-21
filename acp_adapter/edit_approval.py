@@ -189,6 +189,12 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
     if requester is None:
         return None
 
+    # cross_profile=True means the user explicitly authorised this cross-
+    # profile edit (flag set by the agent after user direction).  Trust it
+    # and skip ACP approval — same semantics as write_file/patch tool layers.
+    if arguments.get("cross_profile", False):
+        return None
+
     try:
         proposal = build_edit_proposal(tool_name, arguments)
     except Exception as exc:

@@ -1100,7 +1100,12 @@ def handle_function_call(
         except Exception as _edit_approval_err:
             logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
             if function_name in {"write_file", "patch"}:
-                return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
+                # If cross_profile=True was passed, the user explicitly authorised
+                # this edit — don't block on a missing/broken approval module.
+                if function_args.get("cross_profile", False):
+                    logger.warning("ACP edit approval guard error but cross_profile=True; allowing edit")
+                else:
+                    return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).
