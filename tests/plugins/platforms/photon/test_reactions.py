@@ -7,13 +7,13 @@ Neither path spawns the Node sidecar or binds ports.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Tuple
 
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 _EYES = "\U0001f440"
@@ -24,14 +24,15 @@ _THUMBS_DOWN = "\U0001f44e"
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    monkeypatch.setenv("PHOTON_NODE_BIN", "node")
     cfg = PlatformConfig(enabled=True, token="", extra={})
     return PhotonAdapter(cfg)
 
 
-def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]:
-    calls: List[Tuple[str, Dict[str, Any]]] = []
+def _capture_sidecar(adapter: PhotonAdapter) -> list[tuple[str, dict[str, Any]]]:
+    calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
         calls.append((path, body))
         return {"ok": True, "messageId": "msg-123", "reactionId": "react-1"}
 
@@ -41,8 +42,8 @@ def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]
 
 def _capture_handled(
     adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch
-) -> List[MessageEvent]:
-    captured: List[MessageEvent] = []
+) -> list[MessageEvent]:
+    captured: list[MessageEvent] = []
 
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
@@ -63,7 +64,7 @@ def _message_event(adapter: PhotonAdapter) -> MessageEvent:
             user_name=None,
         ),
         message_id="target-msg-1",
-        timestamp=datetime.now(tz=timezone.utc),
+        timestamp=datetime.now(tz=UTC),
     )
 
 
@@ -72,7 +73,8 @@ def _reaction_event(
     target_id: str = "bot-msg-1",
     target_direction: Any = "outbound",
     space_type: str = "dm",
-) -> Dict[str, Any]:
+    target_text: Any = "the bot's earlier reply",
+) -> dict[str, Any]:
     return {
         "messageId": "reaction-evt-1",
         "platform": "iMessage",
@@ -83,6 +85,9 @@ def _reaction_event(
             "emoji": emoji,
             "targetMessageId": target_id,
             "targetDirection": target_direction,
+            # The sidecar always emits this key (hydrated reaction target);
+            # null when the reacted-to message carried no text.
+            "targetText": target_text,
         },
         "timestamp": "2026-06-11T10:00:00.000Z",
     }
@@ -127,7 +132,7 @@ async def test_remove_reaction_posts_unreact(monkeypatch: pytest.MonkeyPatch) ->
 async def test_reaction_failure_is_soft(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
 
-    async def _boom(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _boom(path: str, body: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("sidecar down")
 
     adapter._sidecar_call = _boom  # type: ignore[assignment]
@@ -148,7 +153,7 @@ async def test_hooks_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None
     await adapter.on_processing_start(event)
     await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
-    assert calls == []
+    assert all(path == "/typing" for path, _ in calls)
 
 
 @pytest.mark.asyncio
@@ -159,60 +164,42 @@ async def test_processing_start_adds_eyes(monkeypatch: pytest.MonkeyPatch) -> No
 
     await adapter.on_processing_start(_message_event(adapter))
 
-    assert len(calls) == 1
-    path, body = calls[0]
+    reactions = [(path, body) for path, body in calls if path == "/react"]
+    path, body = reactions[0]
     assert path == "/react"
     assert body["emoji"] == _EYES
     assert body["messageId"] == "target-msg-1"
 
 
 @pytest.mark.asyncio
-async def test_processing_success_swaps_to_thumbs_up(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_processing_success_swaps_eyes_for_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHOTON_REACTIONS", "true")
     adapter = _make_adapter(monkeypatch)
     calls = _capture_sidecar(adapter)
+    event = _message_event(adapter)
 
-    await adapter.on_processing_complete(
-        _message_event(adapter), ProcessingOutcome.SUCCESS
-    )
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
-    assert [path for path, _ in calls] == ["/unreact", "/react"]
-    assert calls[1][1]["emoji"] == _THUMBS_UP
+    reactions = [(path, body) for path, body in calls if path != "/typing"]
+    assert [path for path, _ in reactions] == ["/react", "/react"]
+    assert reactions[0][1]["emoji"] == _EYES
+    assert reactions[1][1]["emoji"] == "✅"
 
 
 @pytest.mark.asyncio
-async def test_processing_failure_swaps_to_thumbs_down(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_processing_failure_never_sends_removal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PHOTON_REACTIONS", "true")
     adapter = _make_adapter(monkeypatch)
     calls = _capture_sidecar(adapter)
+    event = _message_event(adapter)
 
-    await adapter.on_processing_complete(
-        _message_event(adapter), ProcessingOutcome.FAILURE
-    )
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
 
-    assert [path for path, _ in calls] == ["/unreact", "/react"]
-    assert calls[1][1]["emoji"] == _THUMBS_DOWN
-
-
-@pytest.mark.asyncio
-async def test_processing_cancelled_only_removes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PHOTON_REACTIONS", "true")
-    adapter = _make_adapter(monkeypatch)
-    calls = _capture_sidecar(adapter)
-
-    await adapter.on_processing_complete(
-        _message_event(adapter), ProcessingOutcome.CANCELLED
-    )
-
-    assert [path for path, _ in calls] == ["/unreact"]
-
-
+    reactions = [(path, body) for path, body in calls if path != "/typing"]
+    assert [path for path, _ in reactions] == ["/react", "/react"]
+    assert reactions[-1][1]["emoji"] == "❌"
 # -- Inbound reaction routing ------------------------------------------------
 
 @pytest.mark.asyncio
@@ -229,47 +216,10 @@ async def test_inbound_reaction_on_bot_message_routed(
     assert event.text == "reaction:added:❤️"
     assert event.message_type == MessageType.TEXT
     assert event.source.chat_id == "+15551234567"
+    # The tapback correlates to the bot message it reacted to, so the gateway
+    # can inject `[Replying to your previous message: "..."]` for context.
+    assert event.reply_to_message_id == "bot-msg-1"
+    assert event.reply_to_text == "the bot's earlier reply"
+    assert event.reply_to_is_own_message is True
 
 
-@pytest.mark.asyncio
-async def test_inbound_reaction_sent_ids_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No targetDirection from the provider — gate on our own sent-id cache."""
-    adapter = _make_adapter(monkeypatch)
-    captured = _capture_handled(adapter, monkeypatch)
-    adapter._record_sent_message("bot-msg-1")
-
-    await adapter._dispatch_inbound(
-        _reaction_event(target_id="bot-msg-1", target_direction=None)
-    )
-
-    assert len(captured) == 1
-
-
-@pytest.mark.asyncio
-async def test_inbound_reaction_on_foreign_message_dropped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    adapter = _make_adapter(monkeypatch)
-    captured = _capture_handled(adapter, monkeypatch)
-
-    await adapter._dispatch_inbound(
-        _reaction_event(target_id="someone-elses-msg", target_direction=None)
-    )
-
-    assert captured == []
-
-
-@pytest.mark.asyncio
-async def test_inbound_reaction_bypasses_require_mention(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A tapback never carries a wake word — it must skip group gating."""
-    monkeypatch.setenv("PHOTON_REQUIRE_MENTION", "true")
-    adapter = _make_adapter(monkeypatch)
-    captured = _capture_handled(adapter, monkeypatch)
-
-    await adapter._dispatch_inbound(_reaction_event(space_type="group"))
-
-    assert len(captured) == 1

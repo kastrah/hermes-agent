@@ -1,0 +1,4 @@
+name: vault-channel
+version: 0.1.0
+description: Private owner-authenticated secure input for API keys and tokens
+author: Kastrah

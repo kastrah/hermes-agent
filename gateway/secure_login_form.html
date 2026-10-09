@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Save login securely · Zuri</title>
+  <link rel="stylesheet" href="/form.css">
+  <script src="/form.js" defer></script>
+</head>
+<body>
+<main>
+  <h1 id="heading">Save securely</h1>
+  <p>Your secret goes to Zuri’s encrypted vault, not the chat or model.</p>
+  <p id="status" role="status" aria-live="polite">Checking your private link…</p>
+  <form id="login" hidden>
+    <div class="site"><span id="site-label">Only use this login on</span><strong id="origin"></strong></div>
+    <div id="identifier-group"><label for="identifier">Email, phone or username</label>
+    <input id="identifier" name="username" autocomplete="username" maxlength="1024" required></div>
+    <label id="secret-label" for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" maxlength="8192" required>
+    <label class="show"><input id="show" type="checkbox">Show secret</label>
+    <div class="actions">
+      <button id="save" type="submit">Save and continue</button>
+      <button id="cancel" class="secondary" type="button">Cancel</button>
+    </div>
+    <p class="help">This link expires within 5 minutes. Check the site or service above before saving.</p>
+  </form>
+  <noscript>JavaScript is needed for this private form. Enable it and reopen Zuri’s link.</noscript>
+</main>
+</body>
+</html>
